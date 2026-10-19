@@ -5,8 +5,14 @@ import { estimateStrength, generatePassword } from '../src/generator';
 import {
 	createEntry,
 	createGroup,
+	descendantIds,
 	emptyVault,
+	ensureGroupPath,
+	groupPath,
+	groupTree,
+	matchesFilter,
 	matchesQuery,
+	moveGroup,
 	mergeVaults,
 	normalizeVault,
 	removeEntryForever,
@@ -112,7 +118,7 @@ describe('merge', () => {
 describe('model', () => {
 	it('moves entries out of a removed group', () => {
 		const data = emptyVault();
-		const group = createGroup('Работа', 1000);
+		const group = createGroup('Работа', null, 1000);
 		data.groups.push(group);
 		data.entries.push(createEntry({ title: 'a', groupId: group.id }, 1000));
 		removeGroup(data, group.id, 2000);
@@ -144,6 +150,74 @@ describe('model', () => {
 		expect(matchesQuery(entry, 'гос ivan')).toBe(true);
 		expect(matchesQuery(entry, 'gosuslugi')).toBe(true);
 		expect(matchesQuery(entry, 'bank')).toBe(false);
+	});
+});
+
+describe('nested groups', () => {
+	const tree = () => {
+		const data = emptyVault();
+		const work = createGroup('Работа', null, 1);
+		const projects = createGroup('Проекты', work.id, 1);
+		const client = createGroup('Клиент', projects.id, 1);
+		const home = createGroup('Дом', null, 1);
+		data.groups.push(work, projects, client, home);
+		return { data, work, projects, client, home };
+	};
+
+	it('builds a sorted depth-first tree and paths', () => {
+		const { data, client } = tree();
+		expect(groupTree(data.groups).map((n) => `${'-'.repeat(n.depth)}${n.group.name}${n.hasChildren ? '+' : ''}`)).toEqual([
+			'Дом',
+			'Работа+',
+			'-Проекты+',
+			'--Клиент',
+		]);
+		expect(groupPath(data.groups, client.id)).toEqual(['Работа', 'Проекты', 'Клиент']);
+	});
+
+	it('includes subgroups in a group filter', () => {
+		const { data, work, client, home } = tree();
+		const entry = createEntry({ title: 'deep', groupId: client.id });
+		expect(matchesFilter(entry, { kind: 'group', id: work.id }, descendantIds(data.groups, work.id))).toBe(true);
+		expect(matchesFilter(entry, { kind: 'group', id: home.id }, descendantIds(data.groups, home.id))).toBe(false);
+	});
+
+	it('refuses to move a group into its own subgroup', () => {
+		const { data, work, client, home } = tree();
+		expect(moveGroup(data, work.id, client.id)).toBe(false);
+		expect(moveGroup(data, client.id, home.id)).toBe(true);
+		expect(groupPath(data.groups, client.id)).toEqual(['Дом', 'Клиент']);
+	});
+
+	it('survives cycles and missing parents from merged edits', () => {
+		const a = { ...createGroup('A', null, 1), id: 'a', parentId: 'b' };
+		const b = { ...createGroup('B', null, 1), id: 'b', parentId: 'a' };
+		const orphan = { ...createGroup('Orphan', null, 1), id: 'o', parentId: 'gone' };
+		const nodes = groupTree([a, b, orphan]);
+		expect(nodes).toHaveLength(3);
+		expect(nodes.find((n) => n.group.id === 'o')?.depth).toBe(0);
+		expect(descendantIds([a, b], 'a').size).toBeLessThanOrEqual(2);
+	});
+
+	it('moves children and entries up when a group is removed', () => {
+		const { data, work, projects, client } = tree();
+		data.entries.push(createEntry({ title: 'x', groupId: projects.id }));
+		removeGroup(data, projects.id, 5);
+		expect(data.groups.find((g) => g.id === client.id)?.parentId).toBe(work.id);
+		expect(data.entries[0]?.groupId).toBe(work.id);
+	});
+
+	it('creates missing groups along a path and reuses existing ones', () => {
+		const { data, work, projects } = tree();
+		expect(ensureGroupPath(data, ['работа', 'Проекты'])).toBe(projects.id);
+		const id = ensureGroupPath(data, ['Работа', 'Новая', 'Глубже']);
+		expect(groupPath(data.groups, id)).toEqual(['Работа', 'Новая', 'Глубже']);
+		expect(data.groups.filter((g) => g.parentId === work.id).map((g) => g.name).sort()).toEqual(['Новая', 'Проекты']);
+	});
+
+	it('reads old vaults without parentId as top-level groups', () => {
+		const data = normalizeVault({ groups: [{ id: 'g', name: 'Old' }] });
+		expect(data.groups[0]?.parentId).toBeNull();
 	});
 });
 

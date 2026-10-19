@@ -332,6 +332,38 @@
 	color: var(--text-accent);
 }
 
+.passovik-nav-item.is-group {
+	--passovik-depth: 0;
+	gap: var(--size-2-2);
+	padding-left: calc(var(--size-2-1) + var(--passovik-depth) * 14px);
+}
+
+.passovik-nav-toggle.passovik-icon-button {
+	min-width: 20px;
+	min-height: 20px;
+	padding: 0;
+	color: var(--text-faint);
+}
+
+.passovik-nav-toggle svg {
+	width: 14px;
+	height: 14px;
+}
+
+.passovik-nav-toggle-spacer {
+	flex-shrink: 0;
+	width: 20px;
+}
+
+.is-mobile .passovik-nav-toggle.passovik-icon-button {
+	min-width: 28px;
+	min-height: 28px;
+}
+
+.is-mobile .passovik-nav-toggle-spacer {
+	width: 28px;
+}
+
 .passovik-nav-icon {
 	display: flex;
 	color: var(--text-muted);

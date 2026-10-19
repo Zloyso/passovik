@@ -24,6 +24,8 @@ export interface Entry {
 export interface Group {
 	id: string;
 	name: string;
+	/** Parent group; null for top-level groups. */
+	parentId: string | null;
 	createdAt: number;
 	updatedAt: number;
 }
@@ -64,8 +66,8 @@ export function createEntry(fields: Partial<Omit<Entry, 'id' | 'createdAt' | 'up
 	};
 }
 
-export function createGroup(name: string, now = Date.now()): Group {
-	return { id: newId(), name, createdAt: now, updatedAt: now };
+export function createGroup(name: string, parentId: string | null = null, now = Date.now()): Group {
+	return { id: newId(), name, parentId, createdAt: now, updatedAt: now };
 }
 
 // ---------- Defensive parsing of decrypted data ----------
@@ -104,6 +106,7 @@ function parseGroup(raw: unknown, now: number): Group | null {
 	return {
 		id: raw.id,
 		name: asString(raw.name),
+		parentId: typeof raw.parentId === 'string' && raw.parentId && raw.parentId !== raw.id ? raw.parentId : null,
 		createdAt,
 		updatedAt: asNumber(raw.updatedAt, createdAt),
 	};
@@ -200,15 +203,146 @@ export function removeEntryForever(data: VaultData, id: string, now = Date.now()
 	data.tombstones[id] = now;
 }
 
+/** Removes a group; its entries and subgroups move up to the group's parent. */
 export function removeGroup(data: VaultData, id: string, now = Date.now()): void {
+	const parentId = resolveParents(data.groups).get(id) ?? null;
 	data.groups = data.groups.filter((group) => group.id !== id);
 	data.tombstones[id] = now;
+	for (const group of data.groups) {
+		if (group.parentId === id) {
+			group.parentId = parentId;
+			group.updatedAt = now;
+		}
+	}
 	for (const entry of data.entries) {
 		if (entry.groupId === id) {
-			entry.groupId = null;
+			entry.groupId = parentId;
 			entry.updatedAt = now;
 		}
 	}
+}
+
+/** Moves a group under another one (null = top level). Refuses to create a cycle. */
+export function moveGroup(data: VaultData, id: string, parentId: string | null, now = Date.now()): boolean {
+	if (parentId !== null && descendantIds(data.groups, id).has(parentId)) {
+		return false;
+	}
+	const group = data.groups.find((g) => g.id === id);
+	if (!group) {
+		return false;
+	}
+	group.parentId = parentId;
+	group.updatedAt = now;
+	return true;
+}
+
+// ---------- Group tree ----------
+
+/**
+ * Effective parent of every group. Parents that are missing (removed on another device)
+ * or that would form a cycle (conflicting moves merged from two devices) become top level.
+ */
+export function resolveParents(groups: Group[]): Map<string, string | null> {
+	const byId = new Map(groups.map((g) => [g.id, g]));
+	const result = new Map<string, string | null>();
+	for (const group of groups) {
+		let parent = group.parentId && byId.has(group.parentId) ? group.parentId : null;
+		// Walk up; if we come back to this group, the chain is a cycle.
+		const seen = new Set([group.id]);
+		let cursor = parent;
+		while (cursor) {
+			if (seen.has(cursor)) {
+				parent = null;
+				break;
+			}
+			seen.add(cursor);
+			const next = byId.get(cursor)?.parentId;
+			cursor = next && byId.has(next) ? next : null;
+		}
+		result.set(group.id, parent);
+	}
+	return result;
+}
+
+/** The group and all groups nested in it. */
+export function descendantIds(groups: Group[], id: string): Set<string> {
+	const parents = resolveParents(groups);
+	const result = new Set([id]);
+	let added = true;
+	while (added) {
+		added = false;
+		for (const [child, parent] of parents) {
+			if (parent && result.has(parent) && !result.has(child)) {
+				result.add(child);
+				added = true;
+			}
+		}
+	}
+	return result;
+}
+
+/** Names from the top-level group down to the given one. */
+export function groupPath(groups: Group[], id: string | null): string[] {
+	const parents = resolveParents(groups);
+	const byId = new Map(groups.map((g) => [g.id, g]));
+	const path: string[] = [];
+	let cursor = id && byId.has(id) ? id : null;
+	while (cursor) {
+		path.unshift(byId.get(cursor)?.name ?? '');
+		cursor = parents.get(cursor) ?? null;
+	}
+	return path;
+}
+
+export interface GroupNode {
+	group: Group;
+	depth: number;
+	hasChildren: boolean;
+}
+
+/** Groups in display order: depth-first, siblings sorted by name. */
+export function groupTree(groups: Group[]): GroupNode[] {
+	const parents = resolveParents(groups);
+	const children = new Map<string | null, Group[]>();
+	for (const group of groups) {
+		const parent = parents.get(group.id) ?? null;
+		children.set(parent, [...(children.get(parent) ?? []), group]);
+	}
+	const result: GroupNode[] = [];
+	const visit = (parent: string | null, depth: number) => {
+		for (const group of (children.get(parent) ?? []).sort(compareGroups)) {
+			const kids = children.get(group.id) ?? [];
+			result.push({ group, depth, hasChildren: kids.length > 0 });
+			visit(group.id, depth + 1);
+		}
+	};
+	visit(null, 0);
+	return result;
+}
+
+/** Finds or creates the chain of groups for a path like ["Работа", "Проекты"]. Returns the last id. */
+export function ensureGroupPath(data: VaultData, path: string[], now = Date.now()): string | null {
+	let parentId: string | null = null;
+	const parents = resolveParents(data.groups);
+	for (const rawName of path) {
+		const name = rawName.trim();
+		if (!name) {
+			continue;
+		}
+		const lower = name.toLocaleLowerCase();
+		const existing = data.groups.find(
+			(g) => (parents.get(g.id) ?? null) === parentId && g.name.toLocaleLowerCase() === lower,
+		);
+		if (existing) {
+			parentId = existing.id;
+		} else {
+			const group = createGroup(name, parentId, now);
+			data.groups.push(group);
+			parents.set(group.id, parentId);
+			parentId = group.id;
+		}
+	}
+	return parentId;
 }
 
 // ---------- Queries ----------
@@ -219,7 +353,8 @@ export type EntryFilter =
 	| { kind: 'trash' }
 	| { kind: 'group'; id: string };
 
-export function matchesFilter(entry: Entry, filter: EntryFilter): boolean {
+/** `groupScope`: ids of the selected group and its subgroups (see descendantIds). */
+export function matchesFilter(entry: Entry, filter: EntryFilter, groupScope?: Set<string>): boolean {
 	if (filter.kind === 'trash') {
 		return entry.deletedAt !== null;
 	}
@@ -232,7 +367,7 @@ export function matchesFilter(entry: Entry, filter: EntryFilter): boolean {
 		case 'favorites':
 			return entry.favorite;
 		case 'group':
-			return entry.groupId === filter.id;
+			return entry.groupId !== null && (groupScope ? groupScope.has(entry.groupId) : entry.groupId === filter.id);
 	}
 }
 

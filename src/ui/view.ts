@@ -6,21 +6,27 @@ import { t } from '../i18n';
 import type PassovikPlugin from '../main';
 import {
 	compareEntries,
-	compareGroups,
 	createEntry,
 	createGroup,
+	descendantIds,
 	type Entry,
 	type EntryFilter,
+	ensureGroupPath,
 	type Group,
+	type GroupNode,
+	groupPath,
+	groupTree,
 	matchesFilter,
 	matchesQuery,
+	moveGroup,
 	removeEntryForever,
 	removeGroup,
+	resolveParents,
 } from '../model';
 import { WrongPasswordError } from '../store';
 import { displayHost, toSafeUrl } from '../url';
 import { VaultFormatError } from '../vault-file';
-import { ChangePasswordModal, confirmAction, CsvFilePicker, GeneratorModal, promptText } from './modals';
+import { ChangePasswordModal, confirmAction, CsvFilePicker, GeneratorModal, GroupPicker, promptText } from './modals';
 import { iconButton, renderStrengthMeter, secretInputAttrs } from './widgets';
 
 export const VIEW_TYPE = 'passovik-vault';
@@ -57,6 +63,8 @@ export class PassovikView extends ItemView {
 	private resizeObserver: ResizeObserver | null = null;
 	private panesEl: HTMLElement | null = null;
 	private backButton: HTMLElement | null = null;
+	/** Groups whose subgroups are hidden in the sidebar (kept for the session only). */
+	private readonly collapsed = new Set<string>();
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -112,7 +120,8 @@ export class PassovikView extends ItemView {
 			if (narrow && this.pane === 'groups' && this.selectedId) {
 				this.pane = 'detail';
 			}
-			void this.render();
+			// Re-render outside the observer callback to avoid "ResizeObserver loop" warnings.
+			window.setTimeout(() => void this.render(), 0);
 		}
 	}
 
@@ -355,15 +364,28 @@ export class PassovikView extends ItemView {
 
 		const header = nav.createDiv({ cls: 'passovik-nav-header' });
 		header.createSpan({ text: t('groups') });
-		iconButton(header, 'folder-plus', t('newGroup'), () => void this.createGroupInteractive());
+		iconButton(header, 'folder-plus', t('newGroup'), () => void this.createGroupInteractive(null));
 
-		const groups = [...data.groups].sort(compareGroups);
-		if (!groups.length) {
+		const nodes = groupTree(data.groups);
+		if (!nodes.length) {
 			nav.createDiv({ cls: 'passovik-nav-empty passovik-muted', text: t('noGroups') });
 		}
-		for (const group of groups) {
-			const count = active.filter((entry) => entry.groupId === group.id).length;
-			this.renderNavItem(nav, { kind: 'group', id: group.id }, 'folder', group.name, count, group);
+		const parents = resolveParents(data.groups);
+		const insideCollapsed = (id: string) => {
+			for (let p = parents.get(id) ?? null; p; p = parents.get(p) ?? null) {
+				if (this.collapsed.has(p)) {
+					return true;
+				}
+			}
+			return false;
+		};
+		for (const node of nodes) {
+			if (insideCollapsed(node.group.id)) {
+				continue;
+			}
+			const scope = descendantIds(data.groups, node.group.id);
+			const count = active.filter((entry) => entry.groupId !== null && scope.has(entry.groupId)).length;
+			this.renderNavItem(nav, { kind: 'group', id: node.group.id }, 'folder', node.group.name, count, node);
 		}
 
 		nav.createDiv({ cls: 'passovik-nav-spacer' });
@@ -377,10 +399,34 @@ export class PassovikView extends ItemView {
 		icon: string,
 		label: string,
 		count: number,
-		group?: Group,
+		node?: GroupNode,
 	): void {
+		const group = node?.group;
 		const item = parent.createDiv({ cls: 'passovik-nav-item', attr: { role: 'button', tabindex: '0' } });
 		item.toggleClass('is-active', sameFilter(filter, this.filter));
+		if (node) {
+			item.addClass('is-group');
+			item.setCssProps({ '--passovik-depth': String(node.depth) });
+			if (node.hasChildren) {
+				const isCollapsed = this.collapsed.has(node.group.id);
+				iconButton(
+					item,
+					isCollapsed ? 'chevron-right' : 'chevron-down',
+					isCollapsed ? t('expandGroup') : t('collapseGroup'),
+					() => {
+						if (isCollapsed) {
+							this.collapsed.delete(node.group.id);
+						} else {
+							this.collapsed.add(node.group.id);
+						}
+						this.renderPanes();
+					},
+					'passovik-nav-toggle',
+				);
+			} else {
+				item.createSpan({ cls: 'passovik-nav-toggle-spacer' });
+			}
+		}
 		setIcon(item.createSpan({ cls: 'passovik-nav-icon' }), icon);
 		item.createSpan({ cls: 'passovik-nav-label', text: label });
 		item.createSpan({ cls: 'passovik-nav-count', text: String(count) });
@@ -421,9 +467,21 @@ export class PassovikView extends ItemView {
 		const menu = new Menu();
 		menu.addItem((item) =>
 			item
+				.setTitle(t('newSubgroup'))
+				.setIcon('folder-plus')
+				.onClick(() => void this.createGroupInteractive(group.id)),
+		);
+		menu.addItem((item) =>
+			item
 				.setTitle(t('renameGroup'))
 				.setIcon('pencil')
 				.onClick(() => void this.renameGroupInteractive(group)),
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle(t('moveGroup'))
+				.setIcon('folder-input')
+				.onClick(() => this.moveGroupInteractive(group)),
 		);
 		menu.addItem((item) =>
 			item
@@ -435,24 +493,66 @@ export class PassovikView extends ItemView {
 		menu.showAtMouseEvent(event);
 	}
 
-	private groupNameTaken(name: string, exceptId?: string): boolean {
+	/** Names must be unique among siblings and must not contain "/" (it separates levels in paths). */
+	private validGroupName(name: string, parentId: string | null, exceptId?: string): boolean {
+		if (name.includes('/')) {
+			new Notice(t('groupNameSlash'));
+			return false;
+		}
+		const groups = this.plugin.store.data.groups;
+		const parents = resolveParents(groups);
 		const lower = name.toLocaleLowerCase();
-		return this.plugin.store.data.groups.some((g) => g.id !== exceptId && g.name.toLocaleLowerCase() === lower);
+		const taken = groups.some(
+			(g) => g.id !== exceptId && (parents.get(g.id) ?? null) === parentId && g.name.toLocaleLowerCase() === lower,
+		);
+		if (taken) {
+			new Notice(t('groupExists'));
+			return false;
+		}
+		return true;
 	}
 
-	private async createGroupInteractive(): Promise<void> {
-		const name = await promptText(this.app, { title: t('newGroup'), placeholder: t('groupName') });
-		if (!name) {
+	private async createGroupInteractive(parentId: string | null): Promise<void> {
+		const title = parentId ? t('newSubgroupIn', { name: this.groupName(parentId) }) : t('newGroup');
+		const name = await promptText(this.app, { title, placeholder: t('groupName') });
+		if (!name || !this.validGroupName(name, parentId)) {
 			return;
 		}
-		if (this.groupNameTaken(name)) {
-			new Notice(t('groupExists'));
-			return;
-		}
-		const group = createGroup(name);
+		const group = createGroup(name, parentId);
 		if (await this.plugin.updateVault((data) => data.groups.push(group))) {
+			if (parentId) {
+				this.collapsed.delete(parentId);
+			}
 			await this.selectFilter({ kind: 'group', id: group.id });
 		}
+	}
+
+	private moveGroupInteractive(group: Group): void {
+		const groups = this.plugin.store.data.groups;
+		const blocked = descendantIds(groups, group.id);
+		const currentParent = resolveParents(groups).get(group.id) ?? null;
+		const options = [
+			{ id: null, label: t('topLevel') },
+			...groupTree(groups)
+				.filter((node) => !blocked.has(node.group.id))
+				.map((node) => ({ id: node.group.id, label: groupPath(groups, node.group.id).join(' / ') })),
+		].filter((option) => option.id !== currentParent);
+
+		new GroupPicker(this.app, t('moveGroupPlaceholder', { name: group.name }), options, (target) => {
+			if (!this.validGroupName(group.name, target, group.id)) {
+				return;
+			}
+			void this.plugin
+				.updateVault((data) => {
+					moveGroup(data, group.id, target);
+				})
+				.then((ok) => {
+					if (ok && target) {
+						this.collapsed.delete(target);
+						this.renderPanes();
+					}
+				});
+		}).open();
 	}
 
 	private async renameGroupInteractive(group: Group): Promise<void> {
@@ -460,8 +560,8 @@ export class PassovikView extends ItemView {
 		if (!name || name === group.name) {
 			return;
 		}
-		if (this.groupNameTaken(name, group.id)) {
-			new Notice(t('groupExists'));
+		const parentId = resolveParents(this.plugin.store.data.groups).get(group.id) ?? null;
+		if (!this.validGroupName(name, parentId, group.id)) {
 			return;
 		}
 		await this.plugin.updateVault((data) => {
@@ -474,9 +574,12 @@ export class PassovikView extends ItemView {
 	}
 
 	private async deleteGroupInteractive(group: Group): Promise<void> {
+		const parentId = resolveParents(this.plugin.store.data.groups).get(group.id) ?? null;
 		const ok = await confirmAction(this.app, {
 			title: t('deleteGroup'),
-			message: t('deleteGroupMessage', { name: group.name }),
+			message: parentId
+				? t('deleteGroupMessageParent', { name: group.name, parent: this.groupName(parentId) })
+				: t('deleteGroupMessage', { name: group.name }),
 			confirmText: t('delete'),
 			danger: true,
 		});
@@ -484,18 +587,17 @@ export class PassovikView extends ItemView {
 			return;
 		}
 		if (this.filter.kind === 'group' && this.filter.id === group.id) {
-			this.filter = { kind: 'all' };
+			this.filter = parentId ? { kind: 'group', id: parentId } : { kind: 'all' };
 		}
+		this.collapsed.delete(group.id);
 		await this.plugin.updateVault((data) => removeGroup(data, group.id));
 	}
 
 	// ---------- Entry list ----------
 
+	/** Full path of a group, e.g. "Работа / Проекты". */
 	private groupName(id: string | null): string {
-		if (!id) {
-			return '';
-		}
-		return this.plugin.store.data.groups.find((g) => g.id === id)?.name ?? '';
+		return groupPath(this.plugin.store.data.groups, id).join(' / ');
 	}
 
 	private filterLabel(): string {
@@ -512,8 +614,10 @@ export class PassovikView extends ItemView {
 	}
 
 	private visibleEntries(): Entry[] {
-		return this.plugin.store.data.entries
-			.filter((entry) => matchesFilter(entry, this.filter))
+		const data = this.plugin.store.data;
+		const scope = this.filter.kind === 'group' ? descendantIds(data.groups, this.filter.id) : undefined;
+		return data.entries
+			.filter((entry) => matchesFilter(entry, this.filter, scope))
 			.filter((entry) => matchesQuery(entry, this.query, this.groupName(entry.groupId)))
 			.sort(compareEntries);
 	}
@@ -830,8 +934,8 @@ export class PassovikView extends ItemView {
 		groupField.createEl('label', { cls: 'passovik-label', text: t('group') });
 		const select = groupField.createEl('select', { cls: 'dropdown' });
 		select.createEl('option', { value: '', text: t('noGroup') });
-		for (const group of [...this.plugin.store.data.groups].sort(compareGroups)) {
-			select.createEl('option', { value: group.id, text: group.name });
+		for (const node of groupTree(this.plugin.store.data.groups)) {
+			select.createEl('option', { value: node.group.id, text: this.groupName(node.group.id) });
 		}
 		select.value = draft.groupId ?? '';
 		select.addEventListener('change', () => {
@@ -1066,18 +1170,9 @@ export class PassovikView extends ItemView {
 
 		const imported = records;
 		const done = await this.plugin.updateVault((data) => {
-			const groupsByName = new Map(data.groups.map((g) => [g.name.toLocaleLowerCase(), g.id]));
 			for (const record of imported) {
-				let groupId: string | null = null;
-				if (record.group) {
-					groupId = groupsByName.get(record.group.toLocaleLowerCase()) ?? null;
-					if (!groupId) {
-						const group = createGroup(record.group);
-						data.groups.push(group);
-						groupsByName.set(record.group.toLocaleLowerCase(), group.id);
-						groupId = group.id;
-					}
-				}
+				// "Работа/Проекты" creates (or reuses) nested groups.
+				const groupId = record.group ? ensureGroupPath(data, record.group.split('/')) : null;
 				data.entries.push(
 					createEntry({
 						title:
@@ -1120,7 +1215,14 @@ export class PassovikView extends ItemView {
 		const entries = this.plugin.store.data.entries.filter((e) => e.deletedAt === null).sort(compareEntries);
 		const rows = [
 			[...CSV_COLUMNS],
-			...entries.map((e) => [e.title, e.username, e.password, e.urls.join('\n'), e.notes, this.groupName(e.groupId)]),
+			...entries.map((e) => [
+				e.title,
+				e.username,
+				e.password,
+				e.urls.join('\n'),
+				e.notes,
+				groupPath(this.plugin.store.data.groups, e.groupId).join('/'),
+			]),
 		];
 		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 13);
 		const path = normalizePath(`passovik-export-${stamp}.csv`);

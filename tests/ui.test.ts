@@ -230,6 +230,91 @@ describe('Passovik view', () => {
 		expect(store.data.groups.map((g) => g.name)).toEqual(['Work']);
 	});
 
+	it('creates, nests, moves and removes subgroups', async () => {
+		const groupItem = (name: string) =>
+			qa('.passovik-nav-item').find((e) => e.querySelector('.passovik-nav-label')?.textContent === name);
+		const openMenuOf = (name: string) =>
+			groupItem(name)!.querySelector<HTMLElement>('[aria-label="Group actions"]')!.click();
+		const promptAnswer = (value: string) => {
+			const modal = topModal()!;
+			modal.contentEl.querySelector('input')!.value = value;
+			submit(modal.contentEl.querySelector('form')!);
+		};
+
+		// Subgroup "Projects" inside "Work"
+		openMenuOf('Work');
+		await chooseMenu('New subgroup');
+		expect(topModal()?.title).toBe('New subgroup in "Work"');
+		promptAnswer('Projects');
+		await waitFor(() => groupItem('Projects'), 'subgroup in nav');
+		expect(groupItem('Projects')!.style.getPropertyValue('--passovik-depth')).toBe('1');
+
+		// "/" is rejected, duplicates among siblings are rejected
+		openMenuOf('Work');
+		await chooseMenu('New subgroup');
+		promptAnswer('a/b');
+		await waitFor(() => notices.includes('Group names cannot contain "/"'), 'slash rejected');
+		openMenuOf('Work');
+		await chooseMenu('New subgroup');
+		promptAnswer('projects');
+		await waitFor(() => notices.includes('A group with this name already exists'), 'duplicate rejected');
+		expect(store.data.groups.map((g) => g.name).sort()).toEqual(['Projects', 'Work']);
+
+		// An entry in the subgroup is counted and listed in the parent too
+		const projects = store.data.groups.find((g) => g.name === 'Projects')!;
+		await plugin.updateVault((data) => {
+			data.entries.push({ ...data.entries[0]!, id: 'nested-1', title: 'Jira', groupId: projects.id });
+		});
+		await waitFor(() => groupItem('Work')?.querySelector('.passovik-nav-count')?.textContent === '1', 'parent count');
+		groupItem('Work')!.click();
+		await waitFor(() => qa('.passovik-entry-title').some((e) => e.textContent === 'Jira'), 'nested entry in parent');
+		qa<HTMLElement>('.passovik-entry').find((e) => e.textContent?.includes('Jira'))!.click();
+		await waitFor(() => text().includes('Work / Projects'), 'group path in details');
+
+		// Collapse hides the subgroup
+		groupItem('Work')!.querySelector<HTMLElement>('[aria-label="Collapse"]')!.click();
+		await waitFor(() => !groupItem('Projects'), 'collapsed');
+		groupItem('Work')!.querySelector<HTMLElement>('[aria-label="Expand"]')!.click();
+		await waitFor(() => groupItem('Projects'), 'expanded');
+
+		// Cannot move "Work" into its own subgroup: it is not offered
+		openMenuOf('Work');
+		await chooseMenu('Move to…');
+		const picker = topModal() as unknown as { getItems(): { id: string | null; label: string }[]; close(): void };
+		expect(picker.getItems().map((o) => o.label)).not.toContain('Work / Projects');
+		picker.close();
+
+		// Move "Projects" to the top level
+		openMenuOf('Projects');
+		await chooseMenu('Move to…');
+		const movePicker = topModal() as unknown as { onChooseItem(o: { id: string | null; label: string }): void };
+		movePicker.onChooseItem({ id: null, label: 'Top level' });
+		await waitFor(() => groupItem('Projects')?.style.getPropertyValue('--passovik-depth') === '0', 'moved to top');
+
+		// Put it back and delete the parent: Projects and its entry move up
+		const work = store.data.groups.find((g) => g.name === 'Work')!;
+		await plugin.updateVault((data) => {
+			data.groups.find((g) => g.id === projects.id)!.parentId = work.id;
+		});
+		openMenuOf('Work');
+		await chooseMenu('Delete group');
+		await waitFor(() => topModal()?.title === 'Delete group', 'delete confirm');
+		clickModalButton('Delete');
+		await waitFor(() => !groupItem('Work'), 'work removed');
+		expect(store.data.groups.find((g) => g.id === projects.id)?.parentId).toBeNull();
+		expect(store.data.entries.find((e) => e.id === 'nested-1')?.groupId).toBe(projects.id);
+
+		// Recreate "Work" so later tests that use it keep working
+		await plugin.updateVault((data) => {
+			data.groups.push({ ...work, updatedAt: Date.now() });
+			delete data.tombstones[work.id];
+		});
+		await plugin.updateVault((data) => {
+			data.entries = data.entries.filter((e) => e.id !== 'nested-1');
+			data.groups = data.groups.filter((g) => g.id !== projects.id);
+		});
+	});
+
 	it('filters by search', async () => {
 		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('All entries'))!.click();
 		await waitFor(() => qa('.passovik-entry').length === 1, 'all entries');

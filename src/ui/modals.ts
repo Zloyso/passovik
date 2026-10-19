@@ -219,6 +219,37 @@ export class ChangePasswordModal extends Modal {
 	}
 }
 
+export interface GroupOption {
+	id: string | null;
+	label: string;
+}
+
+/** Picks a destination group; `id: null` stands for the top level. */
+export class GroupPicker extends FuzzySuggestModal<GroupOption> {
+	constructor(
+		app: App,
+		placeholder: string,
+		private readonly options: GroupOption[],
+		private readonly onPick: (id: string | null) => void,
+	) {
+		super(app);
+		this.setPlaceholder(placeholder);
+		this.emptyStateText = t('noGroups');
+	}
+
+	getItems(): GroupOption[] {
+		return this.options;
+	}
+
+	getItemText(option: GroupOption): string {
+		return option.label;
+	}
+
+	onChooseItem(option: GroupOption): void {
+		this.onPick(option.id);
+	}
+}
+
 export class CsvFilePicker extends FuzzySuggestModal<TFile> {
 	constructor(
 		app: App,
