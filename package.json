@@ -1,0 +1,27 @@
+{
+	"name": "passovik",
+	"version": "1.0.0",
+	"description": "Encrypted password vault for Obsidian on desktop and mobile.",
+	"main": "main.js",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc --noEmit && node esbuild.config.mjs production",
+		"lint": "eslint .",
+		"test": "vitest run"
+	},
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"esbuild": "0.25.5",
+		"eslint": "^9.39.4",
+		"eslint-plugin-obsidianmd": "^0.1.9",
+		"globals": "^15.14.0",
+		"jsdom": "^26.1.0",
+		"obsidian": "1.10.3",
+		"typescript": "^5.8.3",
+		"typescript-eslint": "^8.35.1",
+		"vitest": "^3.2.4"
+	}
+}
