@@ -129,7 +129,6 @@ const ru = {
 	strength4: 'Очень надёжный',
 
 	// Master password change
-	openSettings: 'Настройки',
 	changePassword: 'Сменить мастер-пароль',
 	changePasswordTitle: 'Смена мастер-пароля',
 	changePasswordAction: 'Сменить пароль',
@@ -311,7 +310,6 @@ const en: Record<Key, string> = {
 	strength3: 'Strong',
 	strength4: 'Very strong',
 
-	openSettings: 'Settings',
 	changePassword: 'Change master password',
 	changePasswordTitle: 'Change master password',
 	changePasswordAction: 'Change password',

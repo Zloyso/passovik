@@ -199,19 +199,21 @@ export class ChangePasswordModal extends Modal {
 			}
 			submit.disabled = true;
 			submit.setText(t('working'));
-			this.plugin.store
-				.changePassword(current.value, next.value)
-				.then(() => {
-					new Notice(t('passwordChanged'));
-					this.close();
-				})
-				.catch((err: unknown) => {
-					error.setText(err instanceof WrongPasswordError ? t('wrongPassword') : t('saveFailed'));
-					submit.disabled = false;
-					submit.setText(t('changePasswordAction'));
-				});
+			void this.changePassword(current.value, next.value, error, submit);
 		});
 		window.setTimeout(() => current.focus(), 0);
+	}
+
+	private async changePassword(current: string, next: string, error: HTMLElement, submit: HTMLButtonElement) {
+		try {
+			await this.plugin.store.changePassword(current, next);
+			new Notice(t('passwordChanged'));
+			this.close();
+		} catch (err) {
+			error.setText(err instanceof WrongPasswordError ? t('wrongPassword') : t('saveFailed'));
+			submit.disabled = false;
+			submit.setText(t('changePasswordAction'));
+		}
 	}
 
 	onClose() {

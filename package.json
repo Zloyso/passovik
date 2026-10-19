@@ -1,7 +1,7 @@
 {
 	"name": "passovik",
-	"version": "1.2.0",
-	"description": "Encrypted password vault for Obsidian on desktop and mobile.",
+	"version": "1.2.1",
+	"description": "Store passwords in an encrypted vault with groups, search, a password generator, and sync across devices.",
 	"main": "main.js",
 	"type": "module",
 	"private": true,

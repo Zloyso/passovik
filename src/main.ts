@@ -56,8 +56,8 @@ export default class PassovikPlugin extends Plugin {
 		});
 
 		this.app.workspace.onLayoutReady(() => {
-			this.registerEvent(this.app.vault.on('modify', (file) => this.onFileChanged(file.path)));
-			this.registerEvent(this.app.vault.on('create', (file) => this.onFileChanged(file.path)));
+			this.registerEvent(this.app.vault.on('modify', (file) => void this.onFileChanged(file.path)));
+			this.registerEvent(this.app.vault.on('create', (file) => void this.onFileChanged(file.path)));
 		});
 	}
 
@@ -97,12 +97,6 @@ export default class PassovikPlugin extends Plugin {
 		await workspace.revealLeaf(leaf);
 	}
 
-	openSettings(): void {
-		const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
-		setting?.open();
-		setting?.openTabById(this.manifest.id);
-	}
-
 	/** Applies a change to the vault and saves it. Returns false (and reports) on failure. */
 	async updateVault(change: (data: VaultData) => void): Promise<boolean> {
 		this.noteActivity();
@@ -135,7 +129,7 @@ export default class PassovikPlugin extends Plugin {
 		}
 	}
 
-	private onFileChanged(path: string): void {
+	private async onFileChanged(path: string): Promise<void> {
 		if (path !== this.store.path) {
 			return;
 		}
@@ -143,13 +137,12 @@ export default class PassovikPlugin extends Plugin {
 			this.refreshViews();
 			return;
 		}
-		this.store
-			.reloadFromDisk()
-			.then((changed) => {
-				if (changed) {
-					this.refreshViews();
-				}
-			})
-			.catch((err: unknown) => this.handleStoreError(err));
+		try {
+			if (await this.store.reloadFromDisk()) {
+				this.refreshViews();
+			}
+		} catch (err) {
+			this.handleStoreError(err);
+		}
 	}
 }

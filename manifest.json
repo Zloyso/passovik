@@ -1,9 +1,9 @@
 {
 	"id": "passovik",
 	"name": "Passovik",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"minAppVersion": "1.8.7",
-	"description": "Encrypted password vault with groups, search, password generator and sync between devices.",
+	"description": "Store passwords in an encrypted vault with groups, search, a password generator, and sync across devices.",
 	"author": "Zloyso",
 	"authorUrl": "https://github.com/Zloyso",
 	"isDesktopOnly": false

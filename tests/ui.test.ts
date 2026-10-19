@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it } from 'vitest';
-import { menus, notices, openModals, Platform, TFile } from './obsidian-stub';
+import { menus, notices, openModals, Platform, TFile, TFolder } from './obsidian-stub';
 import { setLanguage } from '../src/i18n';
 import type { VaultData } from '../src/model';
 import { parseSettings } from '../src/settings';
@@ -59,13 +59,45 @@ class MemoryAdapter {
 }
 
 const adapter = new MemoryAdapter();
-const app = {
-	vault: {
-		adapter,
-		getFiles: () => [...adapter.files.keys()].map((p) => new TFile(p, p.split('.').pop() ?? '')),
-		read: async (file: TFile) => adapter.read(file.path),
-		create: async (path: string, text: string) => adapter.write(path, text),
+
+/** In-memory Vault API on top of the adapter's file map. */
+const toFile = (path: string) => {
+	const file = new TFile(path, path.split('.').pop() ?? '');
+	file.stat.mtime = adapter.files.get(path)?.mtime ?? 0;
+	return file;
+};
+const folderOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')));
+const vault = {
+	adapter,
+	getFiles: () => [...adapter.files.keys()].map(toFile),
+	getFileByPath: (path: string) => (adapter.files.has(path) ? toFile(path) : null),
+	getFolderByPath: (path: string) => {
+		if (!adapter.dirs.has(path)) return null;
+		const children = [...adapter.files.keys()].filter((f) => folderOf(f) === path).map(toFile);
+		return new TFolder(path, children);
 	},
+	getAbstractFileByPath: (path: string) =>
+		adapter.files.has(path) ? toFile(path) : adapter.dirs.has(path) ? new TFolder(path) : null,
+	read: async (file: TFile) => adapter.read(file.path),
+	modify: async (file: TFile, text: string) => {
+		if (!adapter.files.has(file.path)) throw new Error(`modify: no file ${file.path}`);
+		await adapter.write(file.path, text);
+	},
+	create: async (path: string, text: string) => {
+		if (adapter.files.has(path)) throw new Error(`create: file exists ${path}`);
+		if (folderOf(path) && !adapter.dirs.has(folderOf(path))) throw new Error(`create: no folder for ${path}`);
+		await adapter.write(path, text);
+		return toFile(path);
+	},
+	createFolder: async (path: string) => {
+		if (adapter.dirs.has(path)) throw new Error(`createFolder: exists ${path}`);
+		await adapter.mkdir(path);
+	},
+	delete: async (file: TFile) => adapter.remove(file.path),
+};
+const app = {
+	vault,
+	workspace: { layoutReady: true, onLayoutReady: (cb: () => void) => cb() },
 	fileManager: { trashFile: async (file: TFile) => adapter.remove(file.path) },
 };
 
@@ -78,7 +110,6 @@ const plugin = {
 	store,
 	noteActivity() {},
 	saveSettings: async () => {},
-	openSettings() {},
 	lock() {
 		store.lock();
 		view.refresh();

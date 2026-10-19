@@ -275,12 +275,28 @@ export class PluginSettingTab {
 
 export class Plugin {}
 
-export class TFile {
-	constructor(
-		public path: string,
-		public extension: string,
-	) {}
+export class TAbstractFile {
+	constructor(public path: string) {}
 	get name() {
 		return this.path.split('/').pop() ?? '';
+	}
+}
+
+export class TFile extends TAbstractFile {
+	stat = { mtime: 0, ctime: 0, size: 0 };
+	constructor(
+		path: string,
+		public extension: string,
+	) {
+		super(path);
+	}
+}
+
+export class TFolder extends TAbstractFile {
+	constructor(
+		path: string,
+		public children: TAbstractFile[] = [],
+	) {
+		super(path);
 	}
 }

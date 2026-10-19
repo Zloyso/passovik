@@ -1,8 +1,9 @@
 /**
  * Vault lifecycle: create, unlock, lock, save with merge, backups, password change.
  * While unlocked the store keeps only the derived CryptoKey (never the password) and the decrypted data.
+ * All file access goes through Obsidian's Vault API.
  */
-import { type App, normalizePath } from 'obsidian';
+import { type App, normalizePath, TFile, TFolder } from 'obsidian';
 import { deriveKey, type KdfParams, newKdfParams } from './crypto';
 import { emptyVault, mergeVaults, runMaintenance, type VaultData } from './model';
 import type { PassovikSettings } from './settings';
@@ -52,20 +53,35 @@ export class VaultStore {
 		return normalizePath(`${this.folder}/${VAULT_FILE}`);
 	}
 
-	private get adapter() {
-		return this.app.vault.adapter;
+	private get vault() {
+		return this.app.vault;
+	}
+
+	private vaultFile(): TFile | null {
+		return this.vault.getFileByPath(this.path);
 	}
 
 	async exists(): Promise<boolean> {
-		return this.adapter.exists(this.path);
+		return this.vaultFile() !== null;
 	}
 
 	private async readFile(): Promise<{ file: VaultFile; text: string } | null> {
-		if (!(await this.exists())) {
+		const file = this.vaultFile();
+		if (!file) {
 			return null;
 		}
-		const text = await this.adapter.read(this.path);
+		const text = await this.vault.read(file);
 		return { file: parseVaultFile(text), text };
+	}
+
+	private async writeVaultFile(text: string): Promise<void> {
+		const existing = this.vaultFile();
+		if (existing) {
+			await this.vault.modify(existing, text);
+		} else {
+			await this.ensureFolder(this.folder);
+			await this.vault.create(this.path, text);
+		}
 	}
 
 	async create(password: string): Promise<void> {
@@ -75,9 +91,8 @@ export class VaultStore {
 		const kdf = newKdfParams();
 		const key = await deriveKey(password, kdf);
 		const data = emptyVault();
-		await this.ensureFolder(this.folder);
 		const file = await encryptVault(key, kdf, data);
-		await this.adapter.write(this.path, serializeVaultFile(file));
+		await this.writeVaultFile(serializeVaultFile(file));
 		this.session = { key, kdf, rev: file.rev, data };
 	}
 
@@ -149,7 +164,7 @@ export class VaultStore {
 			const key = await deriveKey(next, kdf);
 			await this.backup(stored.text, true);
 			const file = await encryptVault(key, kdf, data);
-			await this.adapter.write(this.path, serializeVaultFile(file));
+			await this.writeVaultFile(serializeVaultFile(file));
 			this.session = { key, kdf, rev: file.rev, data };
 		});
 	}
@@ -186,11 +201,9 @@ export class VaultStore {
 
 		if (stored) {
 			await this.backup(stored.text, false);
-		} else {
-			await this.ensureFolder(this.folder);
 		}
 		const file = await encryptVault(session.key, session.kdf, session.data);
-		await this.adapter.write(this.path, serializeVaultFile(file));
+		await this.writeVaultFile(serializeVaultFile(file));
 		session.rev = file.rev;
 	}
 
@@ -204,44 +217,55 @@ export class VaultStore {
 		if (backupKeep <= 0) {
 			return;
 		}
-		await this.ensureFolder(this.backupFolder);
-		const existing = await this.listBackups();
+		const existing = this.listBackups();
 		const newest = existing[existing.length - 1];
-		if (!force && newest) {
-			const stat = await this.adapter.stat(newest);
-			if (stat && Date.now() - stat.mtime < backupIntervalMinutes * 60_000) {
-				return;
-			}
+		if (!force && newest && Date.now() - newest.stat.mtime < backupIntervalMinutes * 60_000) {
+			return;
 		}
+		await this.ensureFolder(this.backupFolder);
 		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-		await this.adapter.write(normalizePath(`${this.backupFolder}/${BACKUP_PREFIX}${stamp}.json`), previousText);
+		const path = normalizePath(`${this.backupFolder}/${BACKUP_PREFIX}${stamp}.json`);
+		const sameName = this.vault.getFileByPath(path);
+		if (sameName) {
+			await this.vault.modify(sameName, previousText);
+		} else {
+			await this.vault.create(path, previousText);
+		}
 
-		const all = await this.listBackups();
+		const all = this.listBackups();
 		for (const old of all.slice(0, Math.max(0, all.length - backupKeep))) {
-			await this.adapter.remove(old);
+			// Respects the user's "deleted files" preference (system trash, .trash or permanent).
+			await this.app.fileManager.trashFile(old);
 		}
 	}
 
-	private async listBackups(): Promise<string[]> {
-		if (!(await this.adapter.exists(this.backupFolder))) {
+	/** Backup files sorted from oldest to newest (names carry a sortable timestamp). */
+	private listBackups(): TFile[] {
+		const folder = this.vault.getFolderByPath(this.backupFolder);
+		if (!folder) {
 			return [];
 		}
-		const { files } = await this.adapter.list(this.backupFolder);
-		return files
-			.filter((file) => {
-				const name = file.split('/').pop() ?? '';
-				return name.startsWith(BACKUP_PREFIX) && name.endsWith('.json');
-			})
-			.sort();
+		return folder.children
+			.filter((child): child is TFile => child instanceof TFile)
+			.filter((file) => file.name.startsWith(BACKUP_PREFIX) && file.extension === 'json')
+			.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
 	private async ensureFolder(path: string): Promise<void> {
 		const parts = path.split('/');
 		for (let i = 1; i <= parts.length; i++) {
 			const partial = parts.slice(0, i).join('/');
-			if (partial && !(await this.adapter.exists(partial))) {
-				await this.adapter.mkdir(partial);
+			if (!partial) {
+				continue;
 			}
+			const existing = this.vault.getAbstractFileByPath(partial);
+			if (existing instanceof TFolder) {
+				continue;
+			}
+			if (existing) {
+				throw new Error(`"${partial}" is a file, not a folder`);
+			}
+			await this.vault.createFolder(partial);
 		}
 	}
 }

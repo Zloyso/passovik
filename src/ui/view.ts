@@ -132,8 +132,13 @@ export class PassovikView extends ItemView {
 		const token = ++this.renderToken;
 		const store = this.plugin.store;
 		if (!store.isUnlocked) {
-			const exists = await store.exists().catch(() => false);
+			const exists = await store.exists();
 			if (token !== this.renderToken) {
+				return;
+			}
+			if (!exists && !this.app.workspace.layoutReady) {
+				// The file index may still be loading at startup; don't offer "Create vault" too early.
+				this.app.workspace.onLayoutReady(() => this.refresh());
 				return;
 			}
 			this.resetSessionState();
@@ -197,6 +202,10 @@ export class PassovikView extends ItemView {
 
 		form.addEventListener('submit', (event) => {
 			event.preventDefault();
+			void submitForm();
+		});
+
+		const submitForm = async () => {
 			error.setText('');
 			if (!exists) {
 				if (password.value.length < MIN_MASTER_PASSWORD) {
@@ -213,30 +222,32 @@ export class PassovikView extends ItemView {
 
 			submit.disabled = true;
 			submit.setText(t('working'));
-			const action = exists ? this.plugin.store.unlock(password.value) : this.plugin.store.create(password.value);
-			action
-				.then(() => {
-					password.value = '';
-					if (confirm) {
-						confirm.value = '';
-					}
-					this.plugin.noteActivity();
-					this.plugin.refreshViews();
-				})
-				.catch((err: unknown) => {
-					if (err instanceof WrongPasswordError) {
-						error.setText(t('wrongPassword'));
-					} else if (err instanceof VaultFormatError) {
-						error.setText(t('vaultDamaged'));
-					} else {
-						console.error('Passovik: unlock failed', err);
-						error.setText(t('unlockFailed'));
-					}
-					submit.disabled = false;
-					submit.setText(submitText);
-					password.select();
-				});
-		});
+			try {
+				if (exists) {
+					await this.plugin.store.unlock(password.value);
+				} else {
+					await this.plugin.store.create(password.value);
+				}
+				password.value = '';
+				if (confirm) {
+					confirm.value = '';
+				}
+				this.plugin.noteActivity();
+				this.plugin.refreshViews();
+			} catch (err) {
+				if (err instanceof WrongPasswordError) {
+					error.setText(t('wrongPassword'));
+				} else if (err instanceof VaultFormatError) {
+					error.setText(t('vaultDamaged'));
+				} else {
+					console.error('Passovik: unlock failed', err);
+					error.setText(t('unlockFailed'));
+				}
+				submit.disabled = false;
+				submit.setText(submitText);
+				password.select();
+			}
+		};
 
 		if (!Platform.isMobile) {
 			window.setTimeout(() => password.focus(), 0);
@@ -307,12 +318,6 @@ export class PassovikView extends ItemView {
 				.setTitle(t('changePassword'))
 				.setIcon('key')
 				.onClick(() => new ChangePasswordModal(this.plugin).open()),
-		);
-		menu.addItem((item) =>
-			item
-				.setTitle(t('openSettings'))
-				.setIcon('settings')
-				.onClick(() => this.plugin.openSettings()),
 		);
 		menu.showAtMouseEvent(event);
 	}
@@ -551,24 +556,21 @@ export class PassovikView extends ItemView {
 		].filter((option) => option.id !== currentParent);
 
 		new GroupPicker(this.app, t('moveGroupPlaceholder', { name: group.name }), options, (target) =>
-			this.moveGroupTo(group, target),
+			void this.moveGroupTo(group, target),
 		).open();
 	}
 
-	private moveGroupTo(group: Group, target: string | null): void {
+	private async moveGroupTo(group: Group, target: string | null): Promise<void> {
 		if (!this.validGroupName(group.name, target, group.id)) {
 			return;
 		}
-		void this.plugin
-			.updateVault((data) => {
-				moveGroup(data, group.id, target);
-			})
-			.then((ok) => {
-				if (ok && target) {
-					this.collapsed.delete(target);
-					this.renderPanes();
-				}
-			});
+		const ok = await this.plugin.updateVault((data) => {
+			moveGroup(data, group.id, target);
+		});
+		if (ok && target) {
+			this.collapsed.delete(target);
+			this.renderPanes();
+		}
 	}
 
 	// ---------- Drag and drop of groups ----------
@@ -629,7 +631,7 @@ export class PassovikView extends ItemView {
 			event.preventDefault();
 			const group = this.plugin.store.data.groups.find((g) => g.id === draggedId);
 			if (group) {
-				this.moveGroupTo(group, target);
+				void this.moveGroupTo(group, target);
 			}
 		});
 	}
@@ -1049,10 +1051,14 @@ export class PassovikView extends ItemView {
 
 		form.addEventListener('submit', (event) => {
 			event.preventDefault();
-			submit.disabled = true;
-			void this.saveDraft(draft).finally(() => {
-				submit.disabled = false;
-			});
+			void (async () => {
+				submit.disabled = true;
+				try {
+					await this.saveDraft(draft);
+				} finally {
+					submit.disabled = false;
+				}
+			})();
 		});
 		form.addEventListener('keydown', (event) => {
 			if (event.key === 'Escape') {
@@ -1306,8 +1312,9 @@ export class PassovikView extends ItemView {
 		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 13);
 		const path = normalizePath(`passovik-export-${stamp}.csv`);
 		try {
-			if (await this.app.vault.adapter.exists(path)) {
-				await this.app.vault.adapter.write(path, toCsv(rows));
+			const existing = this.app.vault.getFileByPath(path);
+			if (existing) {
+				await this.app.vault.modify(existing, toCsv(rows));
 			} else {
 				await this.app.vault.create(path, toCsv(rows));
 			}
