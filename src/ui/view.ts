@@ -33,6 +33,9 @@ export const VIEW_TYPE = 'passovik-vault';
 
 const NARROW_WIDTH = 720;
 const GROUP_DRAG_TYPE = 'application/x-passovik-group';
+const ENTRY_DRAG_TYPE = 'application/x-passovik-entry';
+
+type DragItem = { kind: 'group' | 'entry'; id: string };
 const MIN_MASTER_PASSWORD = 8;
 
 type Pane = 'groups' | 'list' | 'detail';
@@ -66,8 +69,8 @@ export class PassovikView extends ItemView {
 	private backButton: HTMLElement | null = null;
 	/** Groups whose subgroups are hidden in the sidebar (kept for the session only). */
 	private readonly collapsed = new Set<string>();
-	/** Group being dragged in the sidebar (dataTransfer is not readable during dragover). */
-	private draggingGroupId: string | null = null;
+	/** Item being dragged (dataTransfer is not readable during dragover). */
+	private dragging: DragItem | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -374,8 +377,8 @@ export class PassovikView extends ItemView {
 		header.createSpan({ text: t('groups') });
 		iconButton(header, 'folder-plus', t('newGroup'), () => void this.createGroupInteractive(null));
 		if (!Platform.isMobile) {
-			// Dropping a group on the "Groups" header moves it to the top level.
-			this.makeGroupDropTarget(header, null);
+			// Dropping on the "Groups" header: a group goes to the top level, an entry leaves its group.
+			this.makeDropTarget(header, null);
 		}
 
 		const nodes = groupTree(data.groups);
@@ -450,8 +453,8 @@ export class PassovikView extends ItemView {
 			});
 			// Touch drag-and-drop is unreliable in mobile Obsidian; "Move to…" covers phones.
 			if (!Platform.isMobile) {
-				this.makeGroupDraggable(item, group);
-				this.makeGroupDropTarget(item, group.id);
+				this.makeDraggable(item, { kind: 'group', id: group.id });
+				this.makeDropTarget(item, group.id);
 			}
 		}
 		const activate = () => void this.selectFilter(filter);
@@ -573,41 +576,51 @@ export class PassovikView extends ItemView {
 		}
 	}
 
-	// ---------- Drag and drop of groups ----------
+	// ---------- Drag and drop (groups and entries onto groups) ----------
 
-	/** True when the dragged group may be dropped into `target` (null = top level). */
-	private canDropGroup(target: string | null, draggedId = this.draggingGroupId): boolean {
-		const groups = this.plugin.store.data.groups;
-		if (!draggedId || !groups.some((g) => g.id === draggedId)) {
+	/**
+	 * True when the dragged item may be dropped on `target`.
+	 * For groups null means the top level; for entries it means "no group".
+	 */
+	private canDrop(target: string | null, dragged = this.dragging): boolean {
+		if (!dragged) {
 			return false;
 		}
-		const currentParent = resolveParents(groups).get(draggedId) ?? null;
+		const { groups, entries } = this.plugin.store.data;
+		if (dragged.kind === 'entry') {
+			const entry = entries.find((e) => e.id === dragged.id);
+			return !!entry && entry.deletedAt === null && entry.groupId !== target;
+		}
+		if (!groups.some((g) => g.id === dragged.id)) {
+			return false;
+		}
+		const currentParent = resolveParents(groups).get(dragged.id) ?? null;
 		if (target === currentParent) {
 			return false;
 		}
-		return target === null || !descendantIds(groups, draggedId).has(target);
+		return target === null || !descendantIds(groups, dragged.id).has(target);
 	}
 
-	private makeGroupDraggable(item: HTMLElement, group: Group): void {
-		item.setAttr('draggable', 'true');
-		item.addEventListener('dragstart', (event: DragEvent) => {
-			this.draggingGroupId = group.id;
-			event.dataTransfer?.setData(GROUP_DRAG_TYPE, group.id);
+	private makeDraggable(el: HTMLElement, dragged: DragItem): void {
+		el.setAttr('draggable', 'true');
+		el.addEventListener('dragstart', (event: DragEvent) => {
+			this.dragging = dragged;
+			event.dataTransfer?.setData(dragged.kind === 'group' ? GROUP_DRAG_TYPE : ENTRY_DRAG_TYPE, dragged.id);
 			if (event.dataTransfer) {
 				event.dataTransfer.effectAllowed = 'move';
 			}
-			item.addClass('is-dragging');
+			el.addClass('is-dragging');
 		});
-		item.addEventListener('dragend', () => {
-			this.draggingGroupId = null;
-			item.removeClass('is-dragging');
-			this.panesEl?.querySelectorAll('.is-drop-target').forEach((el) => el.removeClass('is-drop-target'));
+		el.addEventListener('dragend', () => {
+			this.dragging = null;
+			el.removeClass('is-dragging');
+			this.panesEl?.querySelectorAll('.is-drop-target').forEach((target) => target.removeClass('is-drop-target'));
 		});
 	}
 
-	private makeGroupDropTarget(el: HTMLElement, target: string | null): void {
+	private makeDropTarget(el: HTMLElement, target: string | null): void {
 		el.addEventListener('dragover', (event: DragEvent) => {
-			if (!this.canDropGroup(target)) {
+			if (!this.canDrop(target)) {
 				return;
 			}
 			event.preventDefault();
@@ -623,17 +636,52 @@ export class PassovikView extends ItemView {
 		});
 		el.addEventListener('drop', (event: DragEvent) => {
 			el.removeClass('is-drop-target');
-			const draggedId = this.draggingGroupId;
-			this.draggingGroupId = null;
-			if (!draggedId || !this.canDropGroup(target, draggedId)) {
+			const dragged = this.dragging;
+			this.dragging = null;
+			if (!dragged || !this.canDrop(target, dragged)) {
 				return;
 			}
 			event.preventDefault();
-			const group = this.plugin.store.data.groups.find((g) => g.id === draggedId);
+			if (dragged.kind === 'entry') {
+				void this.moveEntryTo(dragged.id, target);
+				return;
+			}
+			const group = this.plugin.store.data.groups.find((g) => g.id === dragged.id);
 			if (group) {
 				void this.moveGroupTo(group, target);
 			}
 		});
+	}
+
+	// ---------- Moving entries between groups ----------
+
+	private async moveEntryTo(entryId: string, groupId: string | null): Promise<void> {
+		const ok = await this.plugin.updateVault((data) => {
+			const entry = data.entries.find((e) => e.id === entryId);
+			if (entry) {
+				entry.groupId = groupId;
+				entry.updatedAt = Date.now();
+			}
+		});
+		if (ok) {
+			if (groupId) {
+				this.collapsed.delete(groupId);
+			}
+			const where = groupId ? this.groupName(groupId) : t('noGroup');
+			new Notice(t('entryMoved', { group: where }));
+			this.renderPanes();
+		}
+	}
+
+	private moveEntryInteractive(entry: Entry): void {
+		const groups = this.plugin.store.data.groups;
+		const options = [
+			{ id: null, label: t('noGroup') },
+			...groupTree(groups).map((node) => ({ id: node.group.id, label: groupPath(groups, node.group.id).join(' / ') })),
+		].filter((option) => option.id !== entry.groupId);
+		new GroupPicker(this.app, t('moveEntryPlaceholder', { title: entry.title || t('untitled') }), options, (target) =>
+			void this.moveEntryTo(entry.id, target),
+		).open();
 	}
 
 	private async renameGroupInteractive(group: Group): Promise<void> {
@@ -751,6 +799,10 @@ export class PassovikView extends ItemView {
 			iconButton(row, 'copy', t('copyPassword'), () => void this.copy(entry.password, t('copiedPassword')), 'passovik-entry-copy');
 		}
 
+		if (entry.deletedAt === null && !Platform.isMobile) {
+			this.makeDraggable(row, { kind: 'entry', id: entry.id });
+		}
+
 		const open = () => void this.selectEntry(entry.id);
 		row.addEventListener('click', open);
 		row.addEventListener('keydown', (event) => {
@@ -806,6 +858,7 @@ export class PassovikView extends ItemView {
 				entry.favorite ? 'is-favorite' : '',
 			);
 			iconButton(actions, 'pencil', t('edit'), () => this.startEdit(entry));
+			iconButton(actions, 'folder-input', t('moveEntry'), () => this.moveEntryInteractive(entry));
 			iconButton(actions, 'trash-2', t('moveToTrash'), () => void this.moveToTrash(entry));
 		} else {
 			iconButton(actions, 'undo-2', t('restore'), () => void this.restore(entry));

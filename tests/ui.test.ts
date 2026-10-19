@@ -404,6 +404,79 @@ describe('Passovik view', () => {
 		});
 	});
 
+	it('moves entries into groups by drag and drop and by the Move button', async () => {
+		const now = Date.now();
+		await plugin.updateVault((data) => {
+			data.groups.push(
+				{ id: 'g-home', name: 'Home', parentId: null, createdAt: now, updatedAt: now },
+				{ id: 'g-office', name: 'Office', parentId: null, createdAt: now, updatedAt: now },
+			);
+			data.entries.push({ ...data.entries[0]!, id: 'e-card', title: 'Card', groupId: null, deletedAt: null, updatedAt: now });
+		});
+		const navItem = (name: string) =>
+			qa('.passovik-nav-item').find((e) => e.querySelector('.passovik-nav-label')?.textContent === name)!;
+		const row = (title: string) =>
+			qa('.passovik-entry').find((e) => e.querySelector('.passovik-entry-title')?.textContent === title)!;
+		const drag = (type: string, target: HTMLElement) => {
+			const event = new Event(type, { bubbles: true, cancelable: true });
+			Object.defineProperty(event, 'dataTransfer', { value: { setData: () => undefined, effectAllowed: '', dropEffect: '' } });
+			Object.defineProperty(event, 'relatedTarget', { value: null });
+			target.dispatchEvent(event);
+			return event;
+		};
+		const groupOf = () => store.data.entries.find((e) => e.id === 'e-card')?.groupId;
+
+		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('All entries'))!.click();
+		await waitFor(() => row('Card'), 'card listed');
+		expect(row('Card').getAttribute('draggable')).toBe('true');
+
+		// Drag the card onto "Home"
+		drag('dragstart', row('Card'));
+		expect(drag('dragover', navItem('Home')).defaultPrevented).toBe(true);
+		drag('drop', navItem('Home'));
+		await waitFor(() => groupOf() === 'g-home', 'card in Home');
+		await waitFor(() => notices.includes('Entry moved to Home'), 'move notice');
+
+		// Its own group does not accept it again
+		drag('dragstart', row('Card'));
+		expect(drag('dragover', navItem('Home')).defaultPrevented).toBe(false);
+		drag('dragend', row('Card'));
+
+		// Dropping on the "Groups" header takes it out of any group
+		drag('dragstart', row('Card'));
+		expect(drag('dragover', q<HTMLElement>('.passovik-nav-header')!).defaultPrevented).toBe(true);
+		drag('drop', q<HTMLElement>('.passovik-nav-header')!);
+		await waitFor(() => groupOf() === null, 'card without group');
+
+		// "Move to group…" button in the details (the way it works on phones)
+		row('Card').click();
+		await waitFor(() => q('.passovik-detail-title')?.textContent === 'Card', 'card details');
+		byLabel('Move to group…').click();
+		const picker = topModal() as unknown as {
+			getItems(): { id: string | null; label: string }[];
+			onChooseItem(o: { id: string | null; label: string }): void;
+		};
+		const options = picker.getItems().map((o) => o.label);
+		expect(options).toContain('Office');
+		expect(options).not.toContain('No group'); // already without a group
+		picker.onChooseItem({ id: 'g-office', label: 'Office' });
+		await waitFor(() => groupOf() === 'g-office', 'card in Office via picker');
+
+		// Entries in the trash are not draggable
+		await plugin.updateVault((data) => {
+			data.entries.find((e) => e.id === 'e-card')!.deletedAt = Date.now();
+		});
+		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('Trash'))!.click();
+		await waitFor(() => row('Card'), 'card in trash');
+		expect(row('Card').getAttribute('draggable')).toBeNull();
+
+		await plugin.updateVault((data) => {
+			data.entries = data.entries.filter((e) => e.id !== 'e-card');
+			data.groups = data.groups.filter((g) => !['g-home', 'g-office'].includes(g.id));
+		});
+		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('All entries'))!.click();
+	});
+
 	it('filters by search', async () => {
 		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('All entries'))!.click();
 		await waitFor(() => qa('.passovik-entry').length === 1, 'all entries');

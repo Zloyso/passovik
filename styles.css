@@ -338,7 +338,8 @@
 	padding-left: calc(var(--size-2-1) + var(--passovik-depth) * 14px);
 }
 
-.passovik-nav-item.is-dragging {
+.passovik-nav-item.is-dragging,
+.passovik-entry.is-dragging {
 	opacity: 0.5;
 }
 
