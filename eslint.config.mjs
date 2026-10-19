@@ -4,7 +4,7 @@ import globals from 'globals';
 
 export default tseslint.config(
 	{
-		ignores: ['node_modules', 'main.js', 'esbuild.config.mjs', 'eslint.config.mjs', 'vitest.config.ts', 'tests/**'],
+		ignores: ['node_modules', 'main.js', 'esbuild.config.mjs', 'eslint.config.mjs', 'vitest.config.ts', 'tests/**', 'tools/**'],
 	},
 	{
 		languageOptions: {
