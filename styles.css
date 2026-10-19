@@ -338,6 +338,17 @@
 	padding-left: calc(var(--size-2-1) + var(--passovik-depth) * 14px);
 }
 
+.passovik-nav-item.is-dragging {
+	opacity: 0.5;
+}
+
+.passovik-nav-item.is-drop-target,
+.passovik-nav-header.is-drop-target {
+	background: hsla(var(--interactive-accent-hsl), 0.15);
+	box-shadow: inset 0 0 0 1px var(--interactive-accent);
+	border-radius: var(--radius-s);
+}
+
 .passovik-nav-toggle.passovik-icon-button {
 	min-width: 20px;
 	min-height: 20px;

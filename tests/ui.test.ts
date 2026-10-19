@@ -315,6 +315,64 @@ describe('Passovik view', () => {
 		});
 	});
 
+	it('moves groups by drag and drop', async () => {
+		const now = Date.now();
+		await plugin.updateVault((data) => {
+			data.groups.push(
+				{ id: 'g-alpha', name: 'Alpha', parentId: null, createdAt: now, updatedAt: now },
+				{ id: 'g-beta', name: 'Beta', parentId: null, createdAt: now, updatedAt: now },
+				{ id: 'g-gamma', name: 'Gamma', parentId: 'g-alpha', createdAt: now, updatedAt: now },
+			);
+		});
+		const item = (name: string) =>
+			qa('.passovik-nav-item').find((e) => e.querySelector('.passovik-nav-label')?.textContent === name)!;
+		const header = () => q<HTMLElement>('.passovik-nav-header')!;
+		const drag = (type: string, target: HTMLElement) => {
+			const event = new Event(type, { bubbles: true, cancelable: true });
+			Object.defineProperty(event, 'dataTransfer', {
+				value: { setData: () => undefined, effectAllowed: '', dropEffect: '' },
+			});
+			Object.defineProperty(event, 'relatedTarget', { value: null });
+			target.dispatchEvent(event);
+			return event;
+		};
+		const parentOf = (id: string) => store.data.groups.find((g) => g.id === id)?.parentId;
+		await waitFor(() => item('Gamma'), 'groups rendered');
+		expect(item('Beta').getAttribute('draggable')).toBe('true');
+
+		// Beta onto Alpha: allowed, highlighted, becomes a subgroup
+		drag('dragstart', item('Beta'));
+		expect(item('Beta').classList.contains('is-dragging')).toBe(true);
+		const over = drag('dragover', item('Alpha'));
+		expect(over.defaultPrevented).toBe(true);
+		expect(item('Alpha').classList.contains('is-drop-target')).toBe(true);
+		drag('drop', item('Alpha'));
+		await waitFor(() => parentOf('g-beta') === 'g-alpha', 'Beta moved into Alpha');
+
+		// Alpha onto its own subgroup Gamma: refused
+		drag('dragstart', item('Alpha'));
+		expect(drag('dragover', item('Gamma')).defaultPrevented).toBe(false);
+		expect(item('Gamma').classList.contains('is-drop-target')).toBe(false);
+		drag('drop', item('Gamma'));
+		drag('dragend', item('Alpha'));
+		expect(parentOf('g-alpha')).toBeNull();
+
+		// Gamma onto the "Groups" header: moves to the top level
+		drag('dragstart', item('Gamma'));
+		expect(drag('dragover', header()).defaultPrevented).toBe(true);
+		drag('drop', header());
+		await waitFor(() => parentOf('g-gamma') === null, 'Gamma moved to top level');
+
+		// A top-level group is not offered the header again (already there)
+		drag('dragstart', item('Gamma'));
+		expect(drag('dragover', header()).defaultPrevented).toBe(false);
+		drag('dragend', item('Gamma'));
+
+		await plugin.updateVault((data) => {
+			data.groups = data.groups.filter((g) => !['g-alpha', 'g-beta', 'g-gamma'].includes(g.id));
+		});
+	});
+
 	it('filters by search', async () => {
 		[...qa('.passovik-nav-item')].find((e) => e.textContent?.includes('All entries'))!.click();
 		await waitFor(() => qa('.passovik-entry').length === 1, 'all entries');

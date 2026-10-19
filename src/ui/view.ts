@@ -32,6 +32,7 @@ import { iconButton, renderStrengthMeter, secretInputAttrs } from './widgets';
 export const VIEW_TYPE = 'passovik-vault';
 
 const NARROW_WIDTH = 720;
+const GROUP_DRAG_TYPE = 'application/x-passovik-group';
 const MIN_MASTER_PASSWORD = 8;
 
 type Pane = 'groups' | 'list' | 'detail';
@@ -65,6 +66,8 @@ export class PassovikView extends ItemView {
 	private backButton: HTMLElement | null = null;
 	/** Groups whose subgroups are hidden in the sidebar (kept for the session only). */
 	private readonly collapsed = new Set<string>();
+	/** Group being dragged in the sidebar (dataTransfer is not readable during dragover). */
+	private draggingGroupId: string | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -365,6 +368,10 @@ export class PassovikView extends ItemView {
 		const header = nav.createDiv({ cls: 'passovik-nav-header' });
 		header.createSpan({ text: t('groups') });
 		iconButton(header, 'folder-plus', t('newGroup'), () => void this.createGroupInteractive(null));
+		if (!Platform.isMobile) {
+			// Dropping a group on the "Groups" header moves it to the top level.
+			this.makeGroupDropTarget(header, null);
+		}
 
 		const nodes = groupTree(data.groups);
 		if (!nodes.length) {
@@ -436,6 +443,11 @@ export class PassovikView extends ItemView {
 				event.preventDefault();
 				this.openGroupMenu(event, group);
 			});
+			// Touch drag-and-drop is unreliable in mobile Obsidian; "Move to…" covers phones.
+			if (!Platform.isMobile) {
+				this.makeGroupDraggable(item, group);
+				this.makeGroupDropTarget(item, group.id);
+			}
 		}
 		const activate = () => void this.selectFilter(filter);
 		item.addEventListener('click', activate);
@@ -538,21 +550,88 @@ export class PassovikView extends ItemView {
 				.map((node) => ({ id: node.group.id, label: groupPath(groups, node.group.id).join(' / ') })),
 		].filter((option) => option.id !== currentParent);
 
-		new GroupPicker(this.app, t('moveGroupPlaceholder', { name: group.name }), options, (target) => {
-			if (!this.validGroupName(group.name, target, group.id)) {
+		new GroupPicker(this.app, t('moveGroupPlaceholder', { name: group.name }), options, (target) =>
+			this.moveGroupTo(group, target),
+		).open();
+	}
+
+	private moveGroupTo(group: Group, target: string | null): void {
+		if (!this.validGroupName(group.name, target, group.id)) {
+			return;
+		}
+		void this.plugin
+			.updateVault((data) => {
+				moveGroup(data, group.id, target);
+			})
+			.then((ok) => {
+				if (ok && target) {
+					this.collapsed.delete(target);
+					this.renderPanes();
+				}
+			});
+	}
+
+	// ---------- Drag and drop of groups ----------
+
+	/** True when the dragged group may be dropped into `target` (null = top level). */
+	private canDropGroup(target: string | null, draggedId = this.draggingGroupId): boolean {
+		const groups = this.plugin.store.data.groups;
+		if (!draggedId || !groups.some((g) => g.id === draggedId)) {
+			return false;
+		}
+		const currentParent = resolveParents(groups).get(draggedId) ?? null;
+		if (target === currentParent) {
+			return false;
+		}
+		return target === null || !descendantIds(groups, draggedId).has(target);
+	}
+
+	private makeGroupDraggable(item: HTMLElement, group: Group): void {
+		item.setAttr('draggable', 'true');
+		item.addEventListener('dragstart', (event: DragEvent) => {
+			this.draggingGroupId = group.id;
+			event.dataTransfer?.setData(GROUP_DRAG_TYPE, group.id);
+			if (event.dataTransfer) {
+				event.dataTransfer.effectAllowed = 'move';
+			}
+			item.addClass('is-dragging');
+		});
+		item.addEventListener('dragend', () => {
+			this.draggingGroupId = null;
+			item.removeClass('is-dragging');
+			this.panesEl?.querySelectorAll('.is-drop-target').forEach((el) => el.removeClass('is-drop-target'));
+		});
+	}
+
+	private makeGroupDropTarget(el: HTMLElement, target: string | null): void {
+		el.addEventListener('dragover', (event: DragEvent) => {
+			if (!this.canDropGroup(target)) {
 				return;
 			}
-			void this.plugin
-				.updateVault((data) => {
-					moveGroup(data, group.id, target);
-				})
-				.then((ok) => {
-					if (ok && target) {
-						this.collapsed.delete(target);
-						this.renderPanes();
-					}
-				});
-		}).open();
+			event.preventDefault();
+			if (event.dataTransfer) {
+				event.dataTransfer.dropEffect = 'move';
+			}
+			el.addClass('is-drop-target');
+		});
+		el.addEventListener('dragleave', (event: DragEvent) => {
+			if (!el.contains(event.relatedTarget as Node | null)) {
+				el.removeClass('is-drop-target');
+			}
+		});
+		el.addEventListener('drop', (event: DragEvent) => {
+			el.removeClass('is-drop-target');
+			const draggedId = this.draggingGroupId;
+			this.draggingGroupId = null;
+			if (!draggedId || !this.canDropGroup(target, draggedId)) {
+				return;
+			}
+			event.preventDefault();
+			const group = this.plugin.store.data.groups.find((g) => g.id === draggedId);
+			if (group) {
+				this.moveGroupTo(group, target);
+			}
+		});
 	}
 
 	private async renameGroupInteractive(group: Group): Promise<void> {

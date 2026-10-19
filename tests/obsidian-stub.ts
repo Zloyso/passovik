@@ -46,6 +46,9 @@ proto.appendText = function (this: HTMLElement, text: string) {
 proto.addClass = function (this: HTMLElement, ...cls: string[]) {
 	this.classList.add(...cls);
 };
+proto.removeClass = function (this: HTMLElement, ...cls: string[]) {
+	this.classList.remove(...cls);
+};
 proto.toggleClass = function (this: HTMLElement, cls: string, value: boolean) {
 	this.classList.toggle(cls, value);
 };
