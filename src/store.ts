@@ -223,14 +223,13 @@ export class VaultStore {
 			return;
 		}
 		await this.ensureFolder(this.backupFolder);
-		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-		const path = normalizePath(`${this.backupFolder}/${BACKUP_PREFIX}${stamp}.json`);
-		const sameName = this.vault.getFileByPath(path);
-		if (sameName) {
-			await this.vault.modify(sameName, previousText);
-		} else {
-			await this.vault.create(path, previousText);
+		// e.g. vault-20261019-185856-123.json; milliseconds and a counter keep quick successive backups apart.
+		const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').replace('.', '-').slice(0, 19);
+		let path = normalizePath(`${this.backupFolder}/${BACKUP_PREFIX}${stamp}.json`);
+		for (let n = 2; this.vault.getAbstractFileByPath(path); n++) {
+			path = normalizePath(`${this.backupFolder}/${BACKUP_PREFIX}${stamp}-${n}.json`);
 		}
+		await this.vault.create(path, previousText);
 
 		const all = this.listBackups();
 		for (const old of all.slice(0, Math.max(0, all.length - backupKeep))) {

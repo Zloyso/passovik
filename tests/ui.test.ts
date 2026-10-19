@@ -505,6 +505,15 @@ describe('Passovik view', () => {
 		expect(csv).toContain('vpn-pass');
 	});
 
+	it('keeps every backup when writes happen within the same second', async () => {
+		const backups = () => [...adapter.files.keys()].filter((p) => p.startsWith('Passovik/backups/'));
+		const before = backups().length;
+		await store.changePassword(PASSWORD, 'temporary pw 2');
+		await store.changePassword('temporary pw 2', PASSWORD);
+		expect(backups().length).toBe(before + 2);
+		expect(new Set(backups()).size).toBe(backups().length);
+	});
+
 	it('merges changes made on another device', async () => {
 		const other = new VaultStore(app as never, () => settings);
 		await other.unlock(PASSWORD);
