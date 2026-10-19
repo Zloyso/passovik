@@ -15,7 +15,8 @@ function applyInfo(el: HTMLElement, info?: DomInfo | string): void {
 	if (!info) return;
 	if (info.cls) el.className = info.cls;
 	if (info.text !== undefined) el.textContent = info.text;
-	if (info.type) el.setAttribute('type', info.type);
+	// Like Obsidian: `type` from DomElementInfo is applied to <input> only, not to <button>.
+	if (info.type && el instanceof HTMLInputElement) el.type = info.type;
 	if (info.value !== undefined) (el as HTMLInputElement).value = info.value;
 	for (const [k, v] of Object.entries(info.attr ?? {})) el.setAttribute(k, v);
 }

@@ -180,7 +180,7 @@ export class PassovikView extends ItemView {
 
 		const error = form.createDiv({ cls: 'passovik-error' });
 		const submitText = exists ? t('unlock') : t('createVault');
-		const submit = form.createEl('button', { type: 'submit', cls: 'mod-cta', text: submitText });
+		const submit = form.createEl('button', { attr: { type: 'submit' }, cls: 'mod-cta', text: submitText });
 		card.createEl('p', { cls: 'passovik-muted passovik-small', text: t('vaultLocation', { path: this.plugin.store.path }) });
 
 		form.addEventListener('submit', (event) => {
@@ -534,7 +534,7 @@ export class PassovikView extends ItemView {
 			empty.createDiv({ text: message });
 			if (!this.query && this.filter.kind !== 'trash') {
 				empty
-					.createEl('button', { text: t('newEntry'), cls: 'mod-cta' })
+					.createEl('button', { text: t('newEntry'), cls: 'mod-cta', attr: { type: 'button' } })
 					.addEventListener('click', () => void this.startCreate());
 			}
 			return;
@@ -728,7 +728,8 @@ export class PassovikView extends ItemView {
 	}
 
 	private renderEditor(pane: HTMLElement, draft: Draft): void {
-		const form = pane.createEl('form', { cls: 'passovik-editor' });
+		// novalidate: the browser would reject links without a scheme ("example.com"), which we accept.
+		const form = pane.createEl('form', { cls: 'passovik-editor', attr: { novalidate: '' } });
 		form.createEl('h2', { cls: 'passovik-detail-title', text: draft.id ? t('editEntry') : t('newEntry') });
 		const changed = () => {
 			this.draftDirty = true;
@@ -817,7 +818,7 @@ export class PassovikView extends ItemView {
 			});
 		};
 		paintUrls();
-		const addUrl = urlField.createEl('button', { type: 'button', cls: 'passovik-link-button', text: t('addLink') });
+		const addUrl = urlField.createEl('button', { attr: { type: 'button' }, cls: 'passovik-link-button', text: t('addLink') });
 		addUrl.addEventListener('click', () => {
 			draft.urls.push('');
 			paintUrls();
@@ -859,9 +860,9 @@ export class PassovikView extends ItemView {
 
 		const actions = form.createDiv({ cls: 'passovik-form-actions' });
 		actions
-			.createEl('button', { type: 'button', text: t('cancel') })
+			.createEl('button', { attr: { type: 'button' }, text: t('cancel') })
 			.addEventListener('click', () => void this.cancelEdit());
-		const submit = actions.createEl('button', { type: 'submit', cls: 'mod-cta', text: t('save') });
+		const submit = actions.createEl('button', { attr: { type: 'submit' }, cls: 'mod-cta', text: t('save') });
 
 		form.addEventListener('submit', (event) => {
 			event.preventDefault();

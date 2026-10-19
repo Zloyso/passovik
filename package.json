@@ -1,6 +1,6 @@
 {
 	"name": "passovik",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Encrypted password vault for Obsidian on desktop and mobile.",
 	"main": "main.js",
 	"type": "module",

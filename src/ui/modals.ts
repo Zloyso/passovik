@@ -56,8 +56,8 @@ export function promptText(app: App, options: { title: string; value?: string; p
 					attr: { placeholder: options.placeholder ?? '' },
 				});
 				const actions = form.createDiv({ cls: 'passovik-form-actions' });
-				actions.createEl('button', { text: t('cancel'), type: 'button' }).addEventListener('click', () => this.close());
-				actions.createEl('button', { text: t('save'), type: 'submit', cls: 'mod-cta' });
+				actions.createEl('button', { text: t('cancel'), attr: { type: 'button' } }).addEventListener('click', () => this.close());
+				actions.createEl('button', { text: t('save'), attr: { type: 'submit' }, cls: 'mod-cta' });
 				form.addEventListener('submit', (event) => {
 					event.preventDefault();
 					const value = input.value.trim();
@@ -183,8 +183,8 @@ export class ChangePasswordModal extends Modal {
 		form.createEl('p', { text: t('changePasswordBackupsNote'), cls: 'passovik-muted' });
 		const error = form.createDiv({ cls: 'passovik-error' });
 		const actions = form.createDiv({ cls: 'passovik-form-actions' });
-		actions.createEl('button', { text: t('cancel'), type: 'button' }).addEventListener('click', () => this.close());
-		const submit = actions.createEl('button', { text: t('changePasswordAction'), type: 'submit', cls: 'mod-cta' });
+		actions.createEl('button', { text: t('cancel'), attr: { type: 'button' } }).addEventListener('click', () => this.close());
+		const submit = actions.createEl('button', { text: t('changePasswordAction'), attr: { type: 'submit' }, cls: 'mod-cta' });
 
 		form.addEventListener('submit', (event) => {
 			event.preventDefault();

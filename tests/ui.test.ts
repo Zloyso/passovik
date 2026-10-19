@@ -113,7 +113,8 @@ const typeInto = (input: HTMLInputElement | HTMLTextAreaElement, value: string) 
 	input.value = value;
 	input.dispatchEvent(new Event('input', { bubbles: true }));
 };
-const submit = (form: HTMLFormElement) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+// requestSubmit() runs constraint validation like a real click on the submit button.
+const submit = (form: HTMLFormElement) => form.requestSubmit();
 const text = () => root().textContent ?? '';
 
 async function waitFor<T>(check: () => T, what: string, timeout = 20_000): Promise<NonNullable<T>> {
@@ -190,6 +191,26 @@ describe('Passovik view', () => {
 		const disk = adapter.files.get('Passovik/vault.json')!.text;
 		expect(disk).not.toContain('Bank');
 		expect(disk).not.toContain('S3cret');
+	});
+
+	it('does not save when adding a link or cancelling', async () => {
+		const before = store.data.entries.length;
+		byLabel('New entry').click();
+		const form = await waitFor(() => q<HTMLFormElement>('.passovik-editor'), 'editor');
+		typeInto(form.querySelector<HTMLInputElement>('input[type="text"]')!, 'Draft only');
+
+		const addLink = [...form.querySelectorAll('button')].find((b) => b.textContent === '+ Add link')!;
+		addLink.click();
+		expect(form.querySelectorAll('input[type="url"]')).toHaveLength(2);
+
+		[...form.querySelectorAll('button')].find((b) => b.textContent === 'Cancel')!.click();
+		await waitFor(() => topModal()?.title === 'Discard changes?', 'discard prompt');
+		clickModalButton('Discard');
+		await waitFor(() => !q('.passovik-editor'), 'editor closed');
+		expect(store.data.entries).toHaveLength(before);
+
+		qa<HTMLElement>('.passovik-entry')[0]!.click();
+		await waitFor(() => q('.passovik-detail-title')?.textContent === 'Bank', 'details back');
 	});
 
 	it('copies the password and opens only safe links', async () => {
