@@ -32,6 +32,8 @@
 
 Папка намеренно не скрытая: скрытые папки (с точкой в начале имени) многие синхронизаторы пропускают.
 
+Папку можно перенести или переименовать прямо в Obsidian — плагин заметит это и сам обновит путь. Если файл не найден по старому пути (например, папку перенесли на другом устройстве), Passovik поищет хранилище в других папках: одно найденное откроет сразу, из нескольких предложит выбрать.
+
 ## Безопасность
 
 - Шифрование AES-256-GCM. Ключ получается из мастер-пароля через PBKDF2-SHA256 с 600 000 итераций и случайной солью.
@@ -77,7 +79,7 @@ npm run build   # проверка типов и сборка
 
 ## English
 
-Passovik is an encrypted password vault for Obsidian on desktop and mobile. Entries are always encrypted with AES-256-GCM using a key derived from your master password (PBKDF2-SHA256, 600,000 iterations). It offers groups, favorites, search, a password generator, trash, encrypted backups, auto-lock, clipboard clearing, CSV import/export, and per-entry merging when the vault is synced between devices. Data lives in the `Passovik` folder of your vault. A forgotten master password cannot be recovered.
+Passovik is an encrypted password vault for Obsidian on desktop and mobile. Entries are always encrypted with AES-256-GCM using a key derived from your master password (PBKDF2-SHA256, 600,000 iterations). It offers groups, favorites, search, a password generator, trash, encrypted backups, auto-lock, clipboard clearing, CSV import/export, and per-entry merging when the vault is synced between devices. Data lives in the `Passovik` folder of your vault; you can move or rename it and the plugin follows it. A forgotten master password cannot be recovered.
 
 ## License
 

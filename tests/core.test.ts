@@ -19,6 +19,7 @@ import {
 	removeGroup,
 	runMaintenance,
 } from '../src/model';
+import { isValidFolder, movedFolder, vaultFolderOf } from '../src/location';
 import { toSafeUrl } from '../src/url';
 import { decryptVault, encryptVault, parseVaultFile, serializeVaultFile, VaultFormatError } from '../src/vault-file';
 
@@ -301,5 +302,33 @@ describe('url', () => {
 		expect(toSafeUrl('javascript:alert(1)')).toBeNull();
 		expect(toSafeUrl('ftp://x.ru')).toBeNull();
 		expect(toSafeUrl('   ')).toBeNull();
+	});
+});
+
+describe('location', () => {
+	it('validates folders and recognizes vault files', () => {
+		expect(isValidFolder('Passovik')).toBe(true);
+		expect(isValidFolder('Личное/Passovik')).toBe(true);
+		expect(isValidFolder('/')).toBe(false);
+		expect(isValidFolder('')).toBe(false);
+		expect(isValidFolder('.hidden')).toBe(false);
+		expect(isValidFolder('a/.b/c')).toBe(false);
+		expect(vaultFolderOf('A/B/vault.json')).toBe('A/B');
+		expect(vaultFolderOf('vault.json')).toBeNull();
+		expect(vaultFolderOf('A/myvault.json')).toBeNull();
+	});
+
+	it('follows moves of the folder, its parents and the vault file', () => {
+		expect(movedFolder('Passovik', 'Passovik', 'Личное/Passovik')).toBe('Личное/Passovik');
+		expect(movedFolder('Passovik', 'Passovik', 'Пароли')).toBe('Пароли');
+		expect(movedFolder('A/B/Passovik', 'A', 'Z')).toBe('Z/B/Passovik');
+		expect(movedFolder('Passovik', 'Passovik/vault.json', 'Other/vault.json')).toBe('Other');
+		// Renamed to something else or moved to the root: no longer a vault folder.
+		expect(movedFolder('Passovik', 'Passovik/vault.json', 'Passovik/old.json')).toBeNull();
+		expect(movedFolder('Passovik', 'Passovik/vault.json', 'vault.json')).toBeNull();
+		// Unrelated paths, including a sibling with a common prefix.
+		expect(movedFolder('Passovik', 'Passovik2', 'X')).toBeNull();
+		expect(movedFolder('Passovik', 'Passovik/backups', 'X')).toBeNull();
+		expect(movedFolder('Passovik', 'Notes/vault.json', 'X/vault.json')).toBeNull();
 	});
 });

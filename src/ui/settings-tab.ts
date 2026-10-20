@@ -1,5 +1,6 @@
 import { type App, normalizePath, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { type Language, setLanguage, t } from '../i18n';
+import { isValidFolder } from '../location';
 import type PassovikPlugin from '../main';
 import { ChangePasswordModal } from './modals';
 
@@ -102,7 +103,7 @@ export class PassovikSettingTab extends PluginSettingTab {
 			.addButton((button) =>
 				button.setButtonText(t('apply')).onClick(async () => {
 					const folder = normalizePath(folderValue.trim());
-					if (!folder || folder === '/' || folder.split('/').some((part) => part.startsWith('.'))) {
+					if (!isValidFolder(folder)) {
 						new Notice(t('folderInvalid'));
 						return;
 					}
@@ -110,8 +111,8 @@ export class PassovikSettingTab extends PluginSettingTab {
 						return;
 					}
 					this.plugin.lock();
-					settings.folder = folder;
-					await save();
+					this.plugin.chosenFolder = folder;
+					await this.plugin.setVaultFolder(folder);
 					this.plugin.refreshViews();
 					new Notice(t('folderChanged', { folder }));
 					this.display();

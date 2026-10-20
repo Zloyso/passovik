@@ -1,6 +1,7 @@
 import { Notice, Plugin } from 'obsidian';
 import { disposeClipboard } from './clipboard';
 import { setLanguage, t } from './i18n';
+import { isValidFolder, movedFolder, vaultFolderOf } from './location';
 import type { VaultData } from './model';
 import { DEFAULT_SETTINGS, type PassovikSettings, parseSettings } from './settings';
 import { KeyChangedError, VaultStore } from './store';
@@ -11,7 +12,10 @@ import { PassovikView, VIEW_TYPE } from './ui/view';
 export default class PassovikPlugin extends Plugin {
 	settings: PassovikSettings = DEFAULT_SETTINGS;
 	store!: VaultStore;
+	/** Folder the user picked by hand in this session; a vault found elsewhere must not override it. */
+	chosenFolder: string | null = null;
 	private lastActivity = Date.now();
+	private locating: Promise<string[]> | null = null;
 
 	async onload(): Promise<void> {
 		this.settings = parseSettings(await this.loadData());
@@ -58,6 +62,8 @@ export default class PassovikPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			this.registerEvent(this.app.vault.on('modify', (file) => void this.onFileChanged(file.path)));
 			this.registerEvent(this.app.vault.on('create', (file) => void this.onFileChanged(file.path)));
+			this.registerEvent(this.app.vault.on('delete', (file) => void this.onFileChanged(file.path)));
+			this.registerEvent(this.app.vault.on('rename', (file, oldPath) => void this.onFileRenamed(file.path, oldPath)));
 		});
 	}
 
@@ -87,6 +93,36 @@ export default class PassovikPlugin extends Plugin {
 		}
 	}
 
+	async setVaultFolder(folder: string): Promise<void> {
+		this.settings.folder = folder;
+		await this.saveSettings();
+	}
+
+	/**
+	 * Looks for the vault elsewhere when its file is missing: the folder was moved here or on another device.
+	 * Switches to it when exactly one is found; otherwise returns the candidates for the user to choose.
+	 */
+	locateVault(): Promise<string[]> {
+		this.locating ??= this.findMovedVault().finally(() => {
+			this.locating = null;
+		});
+		return this.locating;
+	}
+
+	private async findMovedVault(): Promise<string[]> {
+		if (await this.store.exists()) {
+			return [];
+		}
+		const found = await this.store.findVaultFolders();
+		if (found.length !== 1 || this.settings.folder === this.chosenFolder) {
+			return found;
+		}
+		const [folder] = found;
+		await this.setVaultFolder(folder);
+		new Notice(t('vaultFound', { folder }));
+		return [];
+	}
+
 	async openVault(): Promise<void> {
 		const { workspace } = this.app;
 		let leaf = workspace.getLeavesOfType(VIEW_TYPE)[0];
@@ -101,6 +137,10 @@ export default class PassovikPlugin extends Plugin {
 	async updateVault(change: (data: VaultData) => void): Promise<boolean> {
 		this.noteActivity();
 		try {
+			if (!(await this.store.exists())) {
+				// Don't recreate the file at the old path if the folder was just moved elsewhere.
+				await this.locateVault();
+			}
 			await this.store.update(change);
 			return true;
 		} catch (err) {
@@ -129,10 +169,25 @@ export default class PassovikPlugin extends Plugin {
 		}
 	}
 
+	private async onFileRenamed(path: string, oldPath: string): Promise<void> {
+		const folder = movedFolder(this.store.folder, oldPath, path);
+		if (folder !== null && isValidFolder(folder)) {
+			await this.setVaultFolder(folder);
+			new Notice(t('vaultMoved', { folder }));
+		}
+		if (folder !== null && !this.store.isUnlocked) {
+			this.refreshViews();
+		}
+	}
+
 	private async onFileChanged(path: string): Promise<void> {
 		if (path !== this.store.path) {
-			return;
+			// A vault file appeared elsewhere while ours is missing: the folder may have been moved on another device.
+			if (vaultFolderOf(path) === null || (await this.store.exists())) {
+				return;
+			}
 		}
+		await this.locateVault();
 		if (!this.store.isUnlocked) {
 			this.refreshViews();
 			return;

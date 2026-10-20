@@ -6,10 +6,10 @@
 import { type App, normalizePath, TFile, TFolder } from 'obsidian';
 import { deriveKey, type KdfParams, newKdfParams } from './crypto';
 import { emptyVault, mergeVaults, runMaintenance, type VaultData } from './model';
+import { isValidFolder, VAULT_FILE, vaultFolderOf } from './location';
 import type { PassovikSettings } from './settings';
 import { decryptVault, encryptVault, parseVaultFile, serializeVaultFile, type VaultFile } from './vault-file';
 
-const VAULT_FILE = 'vault.json';
 const BACKUP_FOLDER = 'backups';
 const BACKUP_PREFIX = 'vault-';
 
@@ -63,6 +63,30 @@ export class VaultStore {
 
 	async exists(): Promise<boolean> {
 		return this.vaultFile() !== null;
+	}
+
+	/**
+	 * Folders that hold a Passovik vault file, for finding a vault whose folder was moved.
+	 * While unlocked only files encrypted with the current key count, so another vault is never picked up.
+	 */
+	async findVaultFolders(): Promise<string[]> {
+		const folders: string[] = [];
+		for (const file of this.vault.getFiles()) {
+			const folder = vaultFolderOf(file.path);
+			if (folder === null || !isValidFolder(folder)) {
+				continue;
+			}
+			let parsed: VaultFile;
+			try {
+				parsed = parseVaultFile(await this.vault.read(file));
+			} catch {
+				continue; // Some other file named vault.json.
+			}
+			if (!this.session || parsed.kdf.salt === this.session.kdf.salt) {
+				folders.push(folder);
+			}
+		}
+		return folders.sort((a, b) => a.localeCompare(b));
 	}
 
 	private async readFile(): Promise<{ file: VaultFile; text: string } | null> {

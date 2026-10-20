@@ -135,7 +135,12 @@ export class PassovikView extends ItemView {
 		const token = ++this.renderToken;
 		const store = this.plugin.store;
 		if (!store.isUnlocked) {
-			const exists = await store.exists();
+			let exists = await store.exists();
+			let found: string[] = [];
+			if (!exists && this.app.workspace.layoutReady) {
+				found = await this.plugin.locateVault();
+				exists = await store.exists();
+			}
 			if (token !== this.renderToken) {
 				return;
 			}
@@ -146,7 +151,7 @@ export class PassovikView extends ItemView {
 			}
 			this.resetSessionState();
 			this.contentEl.empty();
-			this.renderLockScreen(exists);
+			this.renderLockScreen(exists, found);
 			return;
 		}
 		this.contentEl.empty();
@@ -167,11 +172,20 @@ export class PassovikView extends ItemView {
 
 	// ---------- Lock screen ----------
 
-	private renderLockScreen(exists: boolean): void {
+	/** `found`: vaults in other folders, offered instead of creating a new one. */
+	private renderLockScreen(exists: boolean, found: string[]): void {
 		const wrap = this.contentEl.createDiv({ cls: 'passovik-lock' });
 		const card = wrap.createDiv({ cls: 'passovik-lock-card' });
 		setIcon(card.createDiv({ cls: 'passovik-lock-icon' }), exists ? 'lock' : 'key');
 		card.createEl('h2', { text: 'Passovik' });
+		if (!exists && found.length > 0) {
+			const choice = card.createDiv({ cls: 'passovik-found' });
+			choice.createEl('p', { text: t('vaultsFoundElsewhere') });
+			for (const folder of found) {
+				const button = choice.createEl('button', { attr: { type: 'button' }, cls: 'mod-cta', text: folder });
+				button.addEventListener('click', () => void this.useFoundVault(folder));
+			}
+		}
 		card.createEl('p', { cls: 'passovik-muted', text: exists ? t('unlockHint') : t('createHint') });
 
 		const form = card.createEl('form', { cls: 'passovik-form' });
@@ -255,6 +269,12 @@ export class PassovikView extends ItemView {
 		if (!Platform.isMobile) {
 			window.setTimeout(() => password.focus(), 0);
 		}
+	}
+
+	private async useFoundVault(folder: string): Promise<void> {
+		await this.plugin.setVaultFolder(folder);
+		new Notice(t('vaultFound', { folder }));
+		this.plugin.refreshViews();
 	}
 
 	// ---------- Manager ----------

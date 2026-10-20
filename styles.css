@@ -202,6 +202,25 @@
 	min-height: var(--passovik-tap);
 }
 
+.passovik-found {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	margin: var(--size-4-3) 0;
+	padding: var(--size-4-3);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+}
+
+.passovik-found p {
+	margin: 0;
+}
+
+.passovik-found button {
+	min-height: var(--passovik-tap);
+	overflow-wrap: anywhere;
+}
+
 .passovik-lock-icon {
 	display: inline-flex;
 	padding: var(--size-4-3);

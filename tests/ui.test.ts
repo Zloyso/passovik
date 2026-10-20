@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it } from 'vitest';
-import { menus, notices, openModals, Platform, TFile, TFolder } from './obsidian-stub';
+import { menus, Notice, notices, openModals, Platform, TFile, TFolder } from './obsidian-stub';
 import { setLanguage } from '../src/i18n';
 import type { VaultData } from '../src/model';
 import { parseSettings } from '../src/settings';
@@ -110,6 +110,19 @@ const plugin = {
 	store,
 	noteActivity() {},
 	saveSettings: async () => {},
+	chosenFolder: null as string | null,
+	async setVaultFolder(folder: string) {
+		settings.folder = folder;
+	},
+	// Same decision as PassovikPlugin.locateVault.
+	async locateVault() {
+		if (await store.exists()) return [];
+		const found = await store.findVaultFolders();
+		if (found.length !== 1 || settings.folder === this.chosenFolder) return found;
+		settings.folder = found[0];
+		new Notice(`found ${found[0]}`);
+		return [];
+	},
 	lock() {
 		store.lock();
 		view.refresh();
@@ -616,5 +629,72 @@ describe('Passovik view', () => {
 		const check = new VaultStore(app as never, () => settings);
 		await check.unlock(PASSWORD);
 		expect(check.data.entries.map((e) => e.title).sort()).toEqual(['Bank', 'From phone', 'VPN', 'Почта']);
+	});
+
+	it('finds the vault after its folder was moved', async () => {
+		/** Moves every file under `from/` to `to/`, like moving the folder in the file explorer. */
+		const moveFolder = (from: string, to: string) => {
+			for (const [path, file] of [...adapter.files]) {
+				if (path.startsWith(`${from}/`)) {
+					adapter.files.delete(path);
+					adapter.files.set(to + path.slice(from.length), file);
+				}
+			}
+			for (const dir of [...adapter.dirs]) {
+				if (dir === from || dir.startsWith(`${from}/`)) {
+					adapter.dirs.delete(dir);
+					adapter.dirs.add(to + dir.slice(from.length));
+				}
+			}
+		};
+		const original = settings.folder;
+		const vaultText = adapter.files.get(store.path)!.text;
+		adapter.dirs.add('Личное');
+		adapter.files.set('Notes/vault.json', { text: '{"not":"ours"}', mtime: 0 });
+		plugin.lock();
+
+		// One vault elsewhere: switch to it without offering "Create vault".
+		moveFolder(original, `Личное/${original}`);
+		view.refresh();
+		await waitFor(() => notices.includes(`found Личное/${original}`), 'vault found');
+		expect(settings.folder).toBe(`Личное/${original}`);
+		await waitFor(() => q('button[type="submit"]')?.textContent === 'Unlock', 'unlock screen');
+
+		// Several: let the user choose; the unrelated vault.json is ignored.
+		adapter.dirs.add('Copy');
+		adapter.files.set('Copy/vault.json', { text: vaultText, mtime: 0 });
+		settings.folder = 'Missing';
+		view.refresh();
+		await waitFor(() => qa('.passovik-found button').length === 2, 'choice of vaults');
+		const choices = qa('.passovik-found button');
+		expect(choices.map((b) => b.textContent).sort()).toEqual(['Copy', `Личное/${original}`].sort());
+		choices.find((b) => b.textContent === 'Copy')!.click();
+		await waitFor(() => q('button[type="submit"]')?.textContent === 'Unlock', 'unlock screen after choice');
+		expect(settings.folder).toBe('Copy');
+
+		// A folder picked by hand in settings is kept even if a single vault exists elsewhere.
+		adapter.files.delete('Copy/vault.json');
+		plugin.chosenFolder = 'Fresh';
+		settings.folder = 'Fresh';
+		view.refresh();
+		await waitFor(() => qa('.passovik-found button').length === 1, 'offered, not switched');
+		expect(settings.folder).toBe('Fresh');
+		expect(q('button[type="submit"]')?.textContent).toBe('Create vault');
+
+		// While unlocked only files with the current key count.
+		plugin.chosenFolder = null;
+		settings.folder = `Личное/${original}`;
+		await store.unlock(PASSWORD);
+		const otherSettings = { ...settings, folder: 'Other' };
+		await new VaultStore(app as never, () => otherSettings).create('another password 1');
+		expect(await store.findVaultFolders()).toEqual([`Личное/${original}`]);
+
+		// Clean up.
+		for (const path of ['Other/vault.json', 'Notes/vault.json']) adapter.files.delete(path);
+		for (const dir of ['Copy', 'Other', 'Fresh', 'Missing']) adapter.dirs.delete(dir);
+		moveFolder(`Личное/${original}`, original);
+		adapter.dirs.delete('Личное');
+		settings.folder = original;
+		plugin.lock();
 	});
 });
